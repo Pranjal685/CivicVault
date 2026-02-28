@@ -277,6 +277,9 @@ class IngestionEngine {
     constructor() {
         this.vectorStore = new SimpleVectorStore();
         this.ingestedFiles = [];
+        // LRU response cache — top 50 queries, cleared on new ingestion
+        this._cache = new Map();
+        this._cacheMax = 50;
     }
 
     /**
@@ -287,6 +290,10 @@ class IngestionEngine {
      * @param {function} onProgress – ({ status, message, progress?, total? })
      */
     async ingestPDF(filePath, fileName, onProgress) {
+        // Clear cache when new documents are added
+        this._cache.clear();
+        console.log('[CivicVault] Response cache cleared (new ingestion)');
+
         // ── Step 1: Read & parse PDF ──────────────────────────────────
         onProgress({ status: 'reading', message: 'Reading PDF file…' });
 
@@ -648,6 +655,23 @@ class IngestionEngine {
      *   4. Return answer + sources
      */
     async searchWithAnswer(query, chatHistory = [], llmModel = 'llama3', onToken = null) {
+        // ── Cache check ───────────────────────────────────────────────
+        const cacheKey = `${query.trim().toLowerCase()}|${llmModel}`;
+        if (this._cache.has(cacheKey)) {
+            const cached = this._cache.get(cacheKey);
+            console.log('[CivicVault] Cache HIT:', cacheKey.substring(0, 50));
+
+            // Replay the answer through the streaming callback for UI consistency
+            if (onToken && cached.answer) {
+                onToken(cached.answer);
+            }
+
+            // Move to end (most recently used)
+            this._cache.delete(cacheKey);
+            this._cache.set(cacheKey, cached);
+            return cached;
+        }
+
         // ── Step 1: Find subject section OR use hybrid search ──────────
         const results = await this.search(query, 8);
 
@@ -717,7 +741,20 @@ OUTPUT RULES:
             excerpt: r.document.pageContent.slice(0, 200) + '…',
         }));
 
-        return { answer, sources, chunks: results };
+        const result = { answer, sources, chunks: results };
+
+        // ── Cache the result ──────────────────────────────────────────
+        if (answer && !answer.startsWith('LLM not available')) {
+            // Evict oldest entry if cache is full
+            if (this._cache.size >= this._cacheMax) {
+                const oldest = this._cache.keys().next().value;
+                this._cache.delete(oldest);
+            }
+            this._cache.set(cacheKey, result);
+            console.log(`[CivicVault] Cached response (${this._cache.size}/${this._cacheMax})`);
+        }
+
+        return result;
     }
 
     getVectorStore() {
