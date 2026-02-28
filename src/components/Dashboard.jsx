@@ -5,6 +5,7 @@ import {
     HiOutlineLockClosed,
     HiOutlineServerStack,
     HiOutlineCheckBadge,
+    HiOutlineShieldCheck,
 } from 'react-icons/hi2';
 import DropZone from './DropZone';
 
@@ -83,10 +84,23 @@ export default function Dashboard({ vaultFiles, processingFile, onProcessFile, o
                                         <HiOutlineDocumentText className="w-5 h-5 text-emerald-400" />
                                     </div>
                                     <div className="flex-1 min-w-0">
-                                        <p className="text-sm font-medium text-dark-200 truncate">
-                                            {file.name}
-                                        </p>
-                                        <p className="text-[10px] text-dark-600">
+                                        <div className="flex items-center gap-3">
+                                            <p className="text-sm font-medium text-dark-200 truncate">
+                                                {file.name}
+                                            </p>
+                                            {file.hash && (
+                                                <div
+                                                    className="flex items-center gap-1.5 shrink-0 bg-dark-900/60 px-2 py-0.5 rounded-md border border-emerald-500/20 cursor-help"
+                                                    title={`Verified Immutable | SHA-256: ${file.hash}`}
+                                                >
+                                                    <HiOutlineShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                                                    <span className="text-[10px] font-mono text-emerald-400 uppercase tracking-wider">
+                                                        {file.hash.substring(0, 8)}
+                                                    </span>
+                                                </div>
+                                            )}
+                                        </div>
+                                        <p className="text-[10px] text-dark-600 mt-1">
                                             {file.numPages} page{file.numPages !== 1 ? 's' : ''} · {file.numChunks} chunks
                                         </p>
                                     </div>

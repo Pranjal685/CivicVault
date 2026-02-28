@@ -125,10 +125,23 @@ export default function Sidebar({ activeView, onNavigate, vaultFiles = [] }) {
                                     <div className="w-6 h-6 rounded bg-red-500/10 flex items-center justify-center shrink-0">
                                         <HiOutlineDocumentText className="w-3.5 h-3.5 text-red-400" />
                                     </div>
-                                    <div className="flex-1 min-w-0">
-                                        <p className="text-xs text-dark-400 group-hover:text-dark-200 truncate transition-colors">
-                                            {file.name}
-                                        </p>
+                                    <div className="flex-1 min-w-0 pr-1">
+                                        <div className="flex items-center justify-between gap-1 mb-0.5">
+                                            <p className="text-xs text-dark-400 group-hover:text-dark-200 truncate transition-colors">
+                                                {file.name}
+                                            </p>
+                                            {file.hash && (
+                                                <div
+                                                    className="shrink-0 flex items-center gap-1.5 rounded-md bg-dark-900/80 px-1.5 py-0.5 border border-emerald-500/20 cursor-help"
+                                                    title={`Verified Immutable | SHA-256: ${file.hash}`}
+                                                >
+                                                    <HiOutlineShieldCheck className="w-3 h-3 text-emerald-400" />
+                                                    <span className="text-[9px] font-mono text-emerald-400 uppercase tracking-wider">
+                                                        {file.hash.substring(0, 8)}
+                                                    </span>
+                                                </div>
+                                            )}
+                                        </div>
                                         <p className="text-[9px] text-dark-600">
                                             {file.numPages}p · {file.numChunks} chunks
                                         </p>

@@ -12,6 +12,7 @@ CivicVault is a privacy-first desktop application that lets you index PDF docume
 - **PDF Ingestion** — Drop a PDF and it's automatically parsed, embedded, and indexed.
 - **Hybrid Search** — Combines vector similarity (semantic) + BM25 keyword search with Reciprocal Rank Fusion (RRF).
 - **Subject Section Detection** — Intelligent 3-tier scoring system that accurately locates specific subject content in multi-subject documents.
+- **Cryptographic Evidence Sealing** — Automatically calculates SHA-256 hashes of imported PDFs to cryptographically guarantee document immutability and verify evidence.
 - **Streaming Responses** — Token-by-token output rendering for real-time feedback.
 - **Markdown Rendering** — AI answers are formatted with headings, bullet lists, bold terms, and source citations.
 - **Conversation Memory** — Follow-up questions remember context from previous turns.

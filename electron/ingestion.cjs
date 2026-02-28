@@ -13,9 +13,10 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const crypto = require('crypto'); // Added crypto module
 
 // ═══════════════════════════════════════════════════════════════════════
-// 1. OLLAMA EMBEDDINGS — Direct HTTP to localhost:11434
+// 1. EMBEDDINGS — Direct API call to Ollama
 // ═══════════════════════════════════════════════════════════════════════
 
 function ollamaEmbed(texts, model = 'nomic-embed-text', baseUrl = 'http://localhost:11434') {
@@ -294,10 +295,12 @@ class IngestionEngine {
         this._cache.clear();
         console.log('[CivicVault] Response cache cleared (new ingestion)');
 
-        // ── Step 1: Read & parse PDF ──────────────────────────────────
-        onProgress({ status: 'reading', message: 'Reading PDF file…' });
+        // ── Step 1: Read & parse PDF & generate Hash ──────────────────
+        onProgress({ status: 'reading', message: 'Reading PDF file & Generating Hash…' });
 
         const buffer = fs.readFileSync(filePath);
+        const crypto = require('crypto');
+        const fileHash = crypto.createHash('sha256').update(buffer).digest('hex');
         const pdfParse = require('pdf-parse');
 
         // Capture per-page text for citation accuracy
@@ -380,6 +383,7 @@ class IngestionEngine {
             path: filePath,
             numPages,
             numChunks: totalChunks,
+            hash: fileHash,
             ingestedAt: new Date().toISOString(),
         };
 
