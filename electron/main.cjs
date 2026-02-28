@@ -145,14 +145,31 @@ function createWindow() {
         });
     });
 
-    // ── Search Query (with conversation history) ──────────────────────
+    // ── Search Query (with streaming) ───────────────────────────────────
     ipcMain.handle('search:query', async (event, { query, chatHistory, llmModel }) => {
         try {
             const engine = getIngestionEngine();
-            const result = await engine.searchWithAnswer(query, chatHistory || [], llmModel || 'llama3');
+
+            // Stream tokens to the renderer as they arrive
+            const onToken = (token) => {
+                try {
+                    event.sender.send('search:token', token);
+                } catch (e) {
+                    // window may have closed
+                }
+            };
+
+            const result = await engine.searchWithAnswer(
+                query, chatHistory || [], llmModel || 'llama3', onToken
+            );
+
+            // Signal streaming is done
+            event.sender.send('search:done');
+
             return { success: true, ...result };
         } catch (error) {
             console.error('[CivicVault] Search error:', error);
+            event.sender.send('search:done');
             return { success: false, error: error.message };
         }
     });

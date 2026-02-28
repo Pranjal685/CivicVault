@@ -14,15 +14,17 @@ const isElectron = Boolean(window.electronAPI);
 export default function SearchView() {
     const [query, setQuery] = useState('');
     const [isSearching, setIsSearching] = useState(false);
-    const [conversation, setConversation] = useState([]); // [{ role, content, sources?, searchTime? }]
+    const [conversation, setConversation] = useState([]);
+    const [streamingText, setStreamingText] = useState('');
     const chatEndRef = useRef(null);
+    const streamingRef = useRef('');
 
-    // Auto-scroll to bottom on new messages
+    // Auto-scroll to bottom on new messages and during streaming
     useEffect(() => {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [conversation, isSearching]);
+    }, [conversation, isSearching, streamingText]);
 
-    // Build chat history for the API (only user/assistant message pairs)
+    // Build chat history for the API
     const buildChatHistory = () => {
         return conversation
             .filter((msg) => msg.role === 'user' || msg.role === 'assistant')
@@ -43,23 +45,40 @@ export default function SearchView() {
             return;
         }
 
-        // Add user message
+        // Add user message and start streaming
         setConversation((prev) => [...prev, { role: 'user', content: q }]);
         setQuery('');
         setIsSearching(true);
+        setStreamingText('');
+        streamingRef.current = '';
         const start = Date.now();
+
+        // Subscribe to streaming tokens
+        let unsubToken = null;
+        if (window.electronAPI.onSearchToken) {
+            unsubToken = window.electronAPI.onSearchToken((token) => {
+                streamingRef.current += token;
+                setStreamingText(streamingRef.current);
+            });
+        }
 
         try {
             const chatHistory = buildChatHistory();
             const res = await window.electronAPI.searchVault(q, chatHistory);
             const elapsed = ((Date.now() - start) / 1000).toFixed(1);
 
+            // Clean up streaming listener
+            if (unsubToken) unsubToken();
+
             if (!res.success) {
+                setStreamingText('');
                 setConversation((prev) => [
                     ...prev,
                     { role: 'error', content: res.error },
                 ]);
             } else {
+                // Finalize — use the full answer from the response
+                setStreamingText('');
                 setConversation((prev) => [
                     ...prev,
                     {
@@ -71,6 +90,8 @@ export default function SearchView() {
                 ]);
             }
         } catch (err) {
+            if (unsubToken) unsubToken();
+            setStreamingText('');
             setConversation((prev) => [
                 ...prev,
                 { role: 'error', content: 'Search failed: ' + err.message },
@@ -207,23 +228,36 @@ export default function SearchView() {
                     </div>
                 ))}
 
-                {/* Typing Indicator */}
+                {/* Streaming / Typing Indicator */}
                 {isSearching && (
                     <div className="mb-4 animate-fade-in">
-                        <div className="glass rounded-2xl p-5 max-w-md">
-                            <div className="flex items-center gap-3">
-                                <div className="w-7 h-7 rounded-lg bg-vault-500/10 flex items-center justify-center animate-pulse">
-                                    <HiOutlineBolt className="w-3.5 h-3.5 text-vault-400" />
+                        <div className="glass rounded-2xl p-5">
+                            <div className="flex items-center justify-between mb-3">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-7 h-7 rounded-lg bg-vault-500/10 flex items-center justify-center animate-pulse">
+                                        <HiOutlineBolt className="w-3.5 h-3.5 text-vault-400" />
+                                    </div>
+                                    <span className="text-xs font-semibold text-dark-400">
+                                        {streamingText ? 'Generating…' : 'Searching & retrieving pages…'}
+                                    </span>
                                 </div>
+                            </div>
+
+                            {streamingText ? (
+                                <div className="text-sm text-dark-300 leading-relaxed">
+                                    <MarkdownText text={streamingText} />
+                                    <span className="inline-block w-1.5 h-4 bg-vault-400 animate-pulse ml-0.5 align-text-bottom rounded-sm" />
+                                </div>
+                            ) : (
                                 <div className="flex items-center gap-1.5">
-                                    <span className="text-xs text-dark-400">Searching & generating answer</span>
+                                    <span className="text-xs text-dark-500">Analyzing documents</span>
                                     <span className="flex gap-0.5">
                                         <span className="w-1 h-1 rounded-full bg-vault-400 animate-bounce" style={{ animationDelay: '0ms' }}></span>
                                         <span className="w-1 h-1 rounded-full bg-vault-400 animate-bounce" style={{ animationDelay: '150ms' }}></span>
                                         <span className="w-1 h-1 rounded-full bg-vault-400 animate-bounce" style={{ animationDelay: '300ms' }}></span>
                                     </span>
                                 </div>
-                            </div>
+                            )}
                         </div>
                     </div>
                 )}

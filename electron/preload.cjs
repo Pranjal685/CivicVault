@@ -33,4 +33,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // ── Search ────────────────────────────────────────────────────
     searchVault: (query, chatHistory, llmModel) => ipcRenderer.invoke('search:query', { query, chatHistory, llmModel }),
+
+    // ── Search Streaming (token-by-token) ─────────────────────────
+    onSearchToken: (callback) => {
+        const handler = (_event, token) => callback(token);
+        ipcRenderer.on('search:token', handler);
+        return () => ipcRenderer.removeListener('search:token', handler);
+    },
+    onSearchDone: (callback) => {
+        const handler = () => callback();
+        ipcRenderer.on('search:done', handler);
+        return () => ipcRenderer.removeListener('search:done', handler);
+    },
 });

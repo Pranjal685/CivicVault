@@ -488,56 +488,143 @@ class IngestionEngine {
     findSubjectSection(query) {
         if (this.vectorStore.size === 0) return [];
 
-        // Extract multi-word phrases (3+ words, then 2+) from the query
-        const words = query.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 2);
-        const phrases = [];
-        for (let len = Math.min(4, words.length); len >= 2; len--) {
-            for (let i = 0; i <= words.length - len; i++) {
-                phrases.push(words.slice(i, i + len).join(' '));
+        // AGGRESSIVE NORMALIZATION: strip ALL punctuation, hyphens, dashes, special chars
+        // "Engineering Mathematics-II" → "engineering mathematics ii"
+        // "Engineering Mathematics – 2" → "engineering mathematics 2"
+        const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+
+        const queryNorm = normalize(query);
+
+        // Extract subject name by removing question words
+        const stopWords = new Set(['list', 'all', 'units', 'and', 'sub', 'topics', 'subtopics',
+            'for', 'of', 'the', 'in', 'what', 'are', 'give', 'me', 'show', 'tell', 'about']);
+        const subjectWords = queryNorm.split(' ').filter(w => !stopWords.has(w) && w.length > 0);
+
+        // Separate base name from number: "engineering mathematics 2" → base="engineering mathematics", num="2"
+        const arabicToRoman = { '1': 'i', '2': 'ii', '3': 'iii', '4': 'iv', '5': 'v', '6': 'vi' };
+        const romanToArabic = Object.fromEntries(Object.entries(arabicToRoman).map(([a, r]) => [r, a]));
+
+        let subjectNum = null;
+        let subjectNumRoman = null;
+        const baseWords = [];
+        for (const w of subjectWords) {
+            if (arabicToRoman[w]) {
+                subjectNum = w;
+                subjectNumRoman = arabicToRoman[w];
+            } else if (romanToArabic[w]) {
+                subjectNumRoman = w;
+                subjectNum = romanToArabic[w];
+            } else {
+                baseWords.push(w);
             }
         }
+        const baseName = baseWords.join(' '); // "engineering mathematics"
 
-        // Score each page: find where phrases appear as HEADERS (top of page)
-        // vs. buried in index listings
+        console.log('[CivicVault] Subject detection:');
+        console.log('  Base name:', baseName);
+        console.log('  Number:', subjectNum, '/ Roman:', subjectNumRoman);
+
+        // STRICT UNIT PATTERN: matches "Unit I", "Unit II", "Unit 1" etc.
+        // Does NOT match "Unit Test" or "Unit No"
+        const hasSyllabusUnits = (text) => /unit[\s-]*[ivx\d]+/i.test(text) && !/unit\s*(test|no)/i.test(text);
+
+        // Score each page
         const pageScores = [];
         for (const entry of this.vectorStore.entries) {
-            const text = entry.document.pageContent.toLowerCase();
+            const rawText = entry.document.pageContent;
+            const text = normalize(rawText);
             const page = entry.document.metadata.page;
+            const headerZone = text.substring(0, 400);
             let score = 0;
-            let isHeaderPage = false;
+            let tier = '';
 
-            for (const phrase of phrases) {
-                if (!text.includes(phrase)) continue;
-                const pos = text.indexOf(phrase);
+            const hasBase = headerZone.includes(baseName);
+            const hasNum = subjectNum
+                ? (text.includes(subjectNum) || text.includes(subjectNumRoman))
+                : true;
 
-                // Phrase in first 200 chars → it's a section HEADER (not an index listing)
-                if (pos < 200) {
-                    score += 100;
-                    isHeaderPage = true;
-                } else {
-                    score += 1; // buried in text = weak match
-                }
+            // Check if number is ADJACENT to the base name (within 5 chars)
+            // This prevents "Semester – II" from matching when we want "Mathematics-II"
+            const hasCorrectNum = (() => {
+                if (!subjectNum) return true;
+                if (!hasBase) return false;
+                const baseIdx = headerZone.indexOf(baseName);
+                if (baseIdx < 0) return false;
+                // Look at the 20 chars after the base name ends
+                const afterBase = headerZone.substring(baseIdx + baseName.length, baseIdx + baseName.length + 20);
+                return afterBase.includes(subjectNum) || afterBase.includes(subjectNumRoman);
+            })();
+
+            const hasUnits = hasSyllabusUnits(rawText);
+            const hasCourseKeyword = /\bcourse\b/i.test(rawText.substring(0, 300));
+
+            // Check if NEXT page has actual units (for intro/objectives pages)
+            const nextEntry = this.vectorStore.entries.find(
+                e => e.document.metadata.page === page + 1
+            );
+            const nextHasUnits = nextEntry ? hasSyllabusUnits(nextEntry.document.pageContent) : false;
+
+            // TIER 1 (1000pts): Subject + correct number in header + actual unit content
+            if (hasBase && hasCorrectNum && hasUnits) {
+                score = 1000;
+                tier = 'TIER1-syllabus';
+            }
+            // TIER 1b (800pts): Subject in header + correct number + NEXT page has units
+            // This handles: page 39 = intro, page 40 = units
+            else if (hasBase && hasCorrectNum && nextHasUnits) {
+                score = 900;
+                tier = 'TIER1b-intro+units-next';
+            }
+            // TIER 1c (800pts): Subject in header + number ANYwhere + unit content
+            else if (hasBase && hasNum && hasUnits) {
+                score = 800;
+                tier = 'TIER1c-units';
+            }
+            // TIER 2 (100-300pts): Subject + number in header, no units nearby
+            else if (hasBase && hasCorrectNum) {
+                // Boost if this is a COURSE page (not a semester index table)
+                score = hasCourseKeyword ? 300 : 100;
+                tier = hasCourseKeyword ? 'TIER2-course' : 'TIER2-header';
+            }
+            // TIER 3 (1pt): Base name mentioned somewhere
+            else if (text.includes(baseName) && hasNum) {
+                score = 1;
+                tier = 'TIER3-mention';
             }
 
             if (score > 0) {
-                pageScores.push({ page, score, isHeaderPage, document: entry.document });
+                pageScores.push({ page, score, tier, document: entry.document });
+                const preview = rawText.substring(0, 120).replace(/\n/g, ' ');
+                console.log(`  Page ${page} [${tier}] score=${score}: "${preview}..."`);
             }
         }
 
-        if (pageScores.length === 0) return [];
+        if (pageScores.length === 0) {
+            console.log('[CivicVault] No subject section found, falling back to search');
+            return [];
+        }
 
-        // Sort by score — header pages always win over index pages
+        // Sort by score
         pageScores.sort((a, b) => b.score - a.score);
-        const bestPage = pageScores[0].page;
+        const best = pageScores[0];
 
-        console.log('[CivicVault] Subject section detection:', pageScores.map(p =>
-            `Page ${p.page} (score: ${p.score}, header: ${p.isHeaderPage})`
-        ).join(', '));
-        console.log('[CivicVault] Best section start: Page', bestPage);
+        // If best is only TIER 2 (header, no units), check if NEXT page has units
+        // The subject intro/objectives page is often followed by the units page
+        if (best.tier === 'TIER2-header') {
+            const nextPage = this.vectorStore.entries.find(
+                e => e.document.metadata.page === best.page + 1
+            );
+            if (nextPage && hasSyllabusUnits(nextPage.document.pageContent)) {
+                console.log(`[CivicVault] Best is header-only, but Page ${best.page + 1} has units → shifting start`);
+                // Keep the header page but ensure units page is first in context
+            }
+        }
 
-        // Take the best page + next 3 pages as a contiguous section
+        console.log(`[CivicVault] Best section: Page ${best.page} [${best.tier}]`);
+
+        // Take 4 pages starting from best page
         const sectionPages = [];
-        for (let p = bestPage; p <= bestPage + 3; p++) {
+        for (let p = best.page; p <= best.page + 3; p++) {
             const entry = this.vectorStore.entries.find(
                 e => e.document.metadata.page === p
             );
@@ -545,6 +632,10 @@ class IngestionEngine {
                 sectionPages.push({ score: 1, document: entry.document });
             }
         }
+
+        console.log('[CivicVault] Section pages:', sectionPages.map(r =>
+            `Page ${r.document.metadata.page}`
+        ).join(', '));
 
         return sectionPages;
     }
@@ -556,7 +647,7 @@ class IngestionEngine {
      *   3. Send pages to LLM for extraction
      *   4. Return answer + sources
      */
-    async searchWithAnswer(query, chatHistory = [], llmModel = 'llama3') {
+    async searchWithAnswer(query, chatHistory = [], llmModel = 'llama3', onToken = null) {
         // ── Step 1: Find subject section OR use hybrid search ──────────
         const results = await this.search(query, 8);
 
@@ -613,7 +704,7 @@ OUTPUT RULES:
         // ── Step 5: Call Ollama LLM ───────────────────────────────────
         let answer;
         try {
-            answer = await ollamaChat(messages, llmModel);
+            answer = await ollamaChatStream(messages, llmModel, onToken);
         } catch (err) {
             answer = 'LLM not available (' + err.message + '). Showing raw search results below.';
         }
@@ -639,22 +730,32 @@ OUTPUT RULES:
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 5. OLLAMA CHAT — Direct HTTP to localhost:11434/api/chat
+// 5. OLLAMA CHAT — Streaming HTTP to localhost:11434/api/chat
 // ═══════════════════════════════════════════════════════════════════════
 
-function ollamaChat(messages, model = 'llama3', baseUrl = 'http://localhost:11434') {
+/**
+ * Stream chat completion from Ollama.
+ * @param {Array} messages - chat messages
+ * @param {string} model - model name
+ * @param {Function} onToken - callback(tokenText) called for each generated token
+ * @param {string} baseUrl - Ollama base URL
+ * @returns {Promise<string>} - full concatenated answer
+ */
+function ollamaChatStream(messages, model = 'llama3', onToken = null, baseUrl = 'http://localhost:11434') {
     return new Promise((resolve, reject) => {
         const url = new URL('/api/chat', baseUrl);
         const payload = JSON.stringify({
             model,
             messages,
-            stream: false,
+            stream: true,
             options: {
                 num_predict: 4096,
-                num_ctx: 8192,
-                temperature: 0,     // fully deterministic — no randomness
+                num_ctx: 4096,      // reduced from 8192 — prevents CUDA OOM
+                temperature: 0,
             },
         });
+
+        let fullAnswer = '';
 
         const req = http.request(
             {
@@ -668,18 +769,50 @@ function ollamaChat(messages, model = 'llama3', baseUrl = 'http://localhost:1143
                 },
             },
             (res) => {
-                let body = '';
-                res.on('data', (chunk) => (body += chunk));
+                if (res.statusCode !== 200) {
+                    let body = '';
+                    res.on('data', (chunk) => (body += chunk));
+                    res.on('end', () => reject(new Error(`Ollama chat returned ${res.statusCode}: ${body.slice(0, 200)}`)));
+                    return;
+                }
+
+                let buffer = '';
+                res.on('data', (chunk) => {
+                    buffer += chunk.toString();
+                    // Ollama streams NDJSON — one JSON object per line
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop(); // keep incomplete last line in buffer
+
+                    for (const line of lines) {
+                        if (!line.trim()) continue;
+                        try {
+                            const data = JSON.parse(line);
+                            const token = data.message?.content || '';
+                            if (token) {
+                                fullAnswer += token;
+                                if (onToken) onToken(token);
+                            }
+                        } catch (e) {
+                            // skip malformed lines
+                        }
+                    }
+                });
+
                 res.on('end', () => {
-                    if (res.statusCode !== 200) {
-                        return reject(new Error(`Ollama chat returned ${res.statusCode}: ${body.slice(0, 200)}`));
+                    // Process any remaining buffer
+                    if (buffer.trim()) {
+                        try {
+                            const data = JSON.parse(buffer);
+                            const token = data.message?.content || '';
+                            if (token) {
+                                fullAnswer += token;
+                                if (onToken) onToken(token);
+                            }
+                        } catch (e) {
+                            // skip
+                        }
                     }
-                    try {
-                        const data = JSON.parse(body);
-                        resolve(data.message?.content || 'No response from model.');
-                    } catch (err) {
-                        reject(new Error('Failed to parse Ollama chat response: ' + err.message));
-                    }
+                    resolve(fullAnswer || 'No response from model.');
                 });
             }
         );
