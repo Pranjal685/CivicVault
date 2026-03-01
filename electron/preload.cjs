@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // ── Vault Queries ───────────────────────────────────────────
     getVaultFiles: () => ipcRenderer.invoke('vault:get-files'),
+    generateTimeline: (llmModel) => ipcRenderer.invoke('vault:generate-timeline', { llmModel }),
 
     // ── Ollama Health Check ───────────────────────────────────────
     checkOllamaHealth: () => ipcRenderer.invoke('ollama:health'),

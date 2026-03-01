@@ -13,6 +13,7 @@ CivicVault is a privacy-first desktop application that lets you index PDF docume
 - **Hybrid Search** — Combines vector similarity (semantic) + BM25 keyword search with Reciprocal Rank Fusion (RRF).
 - **Subject Section Detection** — Intelligent 3-tier scoring system that accurately locates specific subject content in multi-subject documents.
 - **Cryptographic Evidence Sealing** — Automatically calculates SHA-256 hashes of imported PDFs to cryptographically guarantee document immutability and verify evidence.
+- **1-Click Case Chronology** — Hybrid regex + LLM timeline extraction that deterministically finds every date in legal documents and generates a beautiful interactive timeline UI.
 - **Streaming Responses** — Token-by-token output rendering for real-time feedback.
 - **Markdown Rendering** — AI answers are formatted with headings, bullet lists, bold terms, and source citations.
 - **Conversation Memory** — Follow-up questions remember context from previous turns.
@@ -104,12 +105,13 @@ User Query
 
 | File | Purpose |
 |---|---|
-| `electron/ingestion.cjs` | PDF parsing, vector store, search, LLM interaction |
+| `electron/ingestion.cjs` | PDF parsing, vector store, search, LLM interaction, timeline extraction |
 | `electron/main.cjs` | Electron main process, IPC handlers |
 | `electron/preload.cjs` | Context bridge for renderer ↔ main |
 | `src/components/SearchView.jsx` | Chat UI with streaming + markdown renderer |
 | `src/components/Dashboard.jsx` | File management dashboard |
 | `src/components/DropZone.jsx` | PDF upload drag-and-drop |
+| `src/components/TimelineView.jsx` | Case chronology timeline UI |
 
 ---
 
@@ -122,6 +124,18 @@ The system intelligently locates specific subjects within multi-subject PDFs (e.
 3. **Strict unit detection** — Matches `Unit I`, `Unit II` patterns but NOT `Unit Test` or `Unit No`
 4. **COURSE keyword boost** — Pages with `COURSE:` in the header score higher than semester index tables
 5. **Next-page units boost** — If the subject intro page is followed by a page with unit details, it ranks as TIER 1b
+
+---
+
+## 1-Click Case Chronology Generator
+
+The timeline feature uses a **hybrid regex + LLM architecture** to guarantee exhaustive date extraction from legal documents:
+
+1. **Regex Date Scanner** — Programmatically scans ALL document chunks using 5 date patterns (`DD/MM/YYYY`, ISO, full month names, ordinal dates, abbreviated months). This is deterministic and can never miss a date.
+2. **Contextual LLM Call** — Pre-found dates + surrounding context are sent to the LLM in a single focused call. The LLM only needs to describe each event, not find dates — a much simpler task for small models like LLaMA 3.2 (3B).
+3. **JSON Schema Enforcement** — Ollama's native grammar constraint (`format: jsonSchema`) physically prevents the model from outputting anything other than the required `{ date, event, source }` structure.
+4. **Safety Net** — After the LLM responds, any dates it skipped are manually injected with raw context from the document.
+5. **Full Fallback** — If the LLM crashes entirely, the system returns all regex-found dates with their surrounding context anyway.
 
 ---
 

@@ -100,6 +100,18 @@ function createWindow() {
         }
     });
 
+    // ── Generate Timeline ───────────────────────────────────────────────
+    ipcMain.handle('vault:generate-timeline', async (event, { llmModel }) => {
+        try {
+            const engine = getIngestionEngine();
+            const timeline = await engine.extractTimeline(llmModel || 'llama3.2');
+            return { success: true, timeline };
+        } catch (err) {
+            console.error('[Main process] Timeline generation failed:', err);
+            return { success: false, error: err.message };
+        }
+    });
+
     // ── Get Ingested Files ────────────────────────────────────────────
     ipcMain.handle('vault:get-files', () => {
         return getIngestionEngine().getIngestedFiles();

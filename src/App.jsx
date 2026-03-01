@@ -3,6 +3,7 @@ import TitleBar from './components/TitleBar';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import SearchView from './components/SearchView';
+import TimelineView from './components/TimelineView';
 
 // Check if running inside Electron
 const isElectron = Boolean(window.electronAPI);
@@ -124,6 +125,7 @@ export default function App() {
                         />
                     )}
                     {activeView === 'search' && <SearchView />}
+                    {activeView === 'timeline' && <TimelineView vaultFiles={vaultFiles} />}
                 </main>
             </div>
         </div>

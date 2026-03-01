@@ -761,6 +761,337 @@ OUTPUT RULES:
         return result;
     }
 
+    /**
+     * Helper to safely trim markdown from JSON string and parse it
+     */
+    stripJsonMarkdown(str) {
+        if (!str) return [];
+
+        // 1. Find the actual JSON block (ignores conversation text like "Here is the response:")
+        let firstIndex = str.search(/[{[]/);
+        let lastIndex = -1;
+        for (let i = str.length - 1; i >= 0; i--) {
+            if (str[i] === '}' || str[i] === ']') {
+                lastIndex = i;
+                break;
+            }
+        }
+
+        if (firstIndex === -1 || lastIndex === -1 || lastIndex < firstIndex) {
+            console.error('[CivicVault] No JSON brackets found in LLM response:\n', str);
+            return [];
+        }
+
+        const cleanStr = str.substring(firstIndex, lastIndex + 1);
+
+        try {
+            let parsed = JSON.parse(cleanStr);
+            let result = [];
+
+            if (Array.isArray(parsed)) {
+                result = parsed;
+            } else if (parsed && typeof parsed === 'object') {
+                // If it returned an object, find any arrays inside
+                for (const key of Object.keys(parsed)) {
+                    if (Array.isArray(parsed[key])) {
+                        result = result.concat(parsed[key]);
+                    }
+                }
+
+                // If no inner arrays, try to use the object itself
+                if (result.length === 0) {
+                    if (parsed.date || parsed.event || parsed.case_name || parsed.decision_date || parsed.outcomes) {
+                        result = [parsed];
+                    }
+                }
+            }
+
+            // 2. Map whatever crazy JSON schema the LLM hallucinates into our required 'date/event/source' format
+            let globalDate = (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+                ? (parsed.date || parsed.decision_date)
+                : "Unknown Date";
+
+            let mappedResult = [];
+            for (const item of result) {
+                if (item && typeof item === 'object') {
+                    let date = item.date || item.time || globalDate;
+
+                    // Construct a fallback event string if 'event' is missing
+                    let eventStr = item.event || item.description || item.sentence_imposed || item.status || item.conviction_status || item.case_name;
+
+                    if (!eventStr) {
+                        // Fallback: stringify the object if we can't find an event description
+                        const cleanObj = { ...item };
+                        delete cleanObj.date;
+                        delete cleanObj.decision_date;
+                        delete cleanObj.source;
+                        const vals = Object.values(cleanObj).filter(v => v);
+                        eventStr = vals.map(v => typeof v === 'object' ? JSON.stringify(v) : v).join(" | ");
+                    }
+
+                    let source = item.source || item.offence_number || "LLM Extracted";
+
+                    mappedResult.push({
+                        date: String(date).substring(0, 50),
+                        event: String(eventStr).substring(0, 600),
+                        source: String(source).substring(0, 50)
+                    });
+                } else if (typeof item === 'string') {
+                    // It just returned an array of strings
+                    mappedResult.push({ date: "Unknown Date", event: item, source: "LLM Extracted" });
+                }
+            }
+
+            // Ensure we don't return an empty array if the parsed root object had summary data
+            if (mappedResult.length === 0 && parsed && typeof parsed === 'object') {
+                if (parsed.case_name || parsed.decision || parsed.reasoning) {
+                    mappedResult.push({
+                        date: String(parsed.decision_date || "Unknown Date"),
+                        event: `Case: ${parsed.case_name || 'Unknown'}. ${JSON.stringify(parsed.decision || parsed.outcomes || "Extracted details")}`,
+                        source: "Document Summary"
+                    });
+                }
+            }
+
+            return mappedResult;
+        } catch (err) {
+            console.error('[CivicVault] Failed to parse timeline JSON:', err.message, '\nRaw extracted block:', cleanStr);
+            return [];
+        }
+    }
+
+    /**
+     * Extracts a chronological timeline using a HYBRID approach:
+     * Step 1: Regex scans ALL raw text to find every date pattern (deterministic, can't miss any).
+     * Step 2: For each date found, extract surrounding context (the sentence/paragraph).
+     * Step 3: Send ONE focused LLM call with the pre-found dates + context for event descriptions.
+     * This bypasses small-model summarization bias.
+     */
+    async extractTimeline(llmModel = 'llama3') {
+        if (this.vectorStore.size === 0) {
+            return [];
+        }
+
+        // 1. Retrieve ALL chunks from the vector store to get the full document text
+        const query = "dates, timeline, chronology, sequence of events, years, months, days, dates of arrest, hearings, occurrences";
+        const k = Math.max(this.vectorStore.size, 20); // Get everything
+        const results = await this.search(query, k);
+
+        if (results.length === 0) {
+            return [];
+        }
+
+        // Sort by page to preserve document order
+        results.sort((a, b) => a.document.metadata.page - b.document.metadata.page);
+
+        // Build the full document text
+        const fullText = results
+            .map((r) => r.document.pageContent)
+            .join('\n');
+
+        // 2. REGEX: Find ALL date patterns in the raw text
+        const datePatterns = [
+            // DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY
+            /(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})/g,
+            // YYYY-MM-DD (ISO)
+            /(\d{4})-(\d{1,2})-(\d{1,2})/g,
+            // "January 15, 2020", "15 January 2020", "January 2020"
+            /(\d{1,2}\s+)?(January|February|March|April|May|June|July|August|September|October|November|December)(\s+\d{1,2})?,?\s+\d{4}/gi,
+            // "15th January 2020", "1st March 2019"
+            /\d{1,2}(?:st|nd|rd|th)\s+(?:January|February|March|April|May|June|July|August|September|October|November|December),?\s+\d{4}/gi,
+            // "Jan 2020", "Feb 15, 2020" (abbreviated months)
+            /(\d{1,2}\s+)?(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.?\s+(\d{1,2},?\s+)?\d{4}/gi,
+        ];
+
+        const foundDates = new Map(); // date string -> { contexts: [], pages: [] }
+
+        for (const r of results) {
+            const text = r.document.pageContent;
+            const page = r.document.metadata.page;
+
+            for (const pattern of datePatterns) {
+                pattern.lastIndex = 0; // Reset regex state
+                let match;
+                while ((match = pattern.exec(text)) !== null) {
+                    const dateStr = match[0].trim();
+                    // Get surrounding context (100 chars before and after)
+                    const start = Math.max(0, match.index - 120);
+                    const end = Math.min(text.length, match.index + match[0].length + 120);
+                    const surroundingContext = text.substring(start, end).replace(/\s+/g, ' ').trim();
+
+                    if (!foundDates.has(dateStr)) {
+                        foundDates.set(dateStr, { contexts: [], pages: new Set() });
+                    }
+                    const entry = foundDates.get(dateStr);
+                    entry.contexts.push(surroundingContext);
+                    entry.pages.add(page);
+                }
+            }
+        }
+
+        console.log(`[CivicVault] Regex found ${foundDates.size} unique dates in document.`);
+
+        // If regex found no dates at all, fall back to pure LLM approach
+        if (foundDates.size === 0) {
+            console.log('[CivicVault] No dates found by regex, falling back to pure LLM extraction...');
+            return this._llmOnlyTimeline(llmModel, results);
+        }
+
+        // 3. Build a focused prompt with the pre-extracted dates + their contexts
+        const dateEntries = [];
+        for (const [dateStr, data] of foundDates) {
+            const contextSnippet = data.contexts.slice(0, 2).join(' ... '); // Take up to 2 context snippets
+            const pages = [...data.pages].sort((a, b) => a - b).join(', ');
+            dateEntries.push(`DATE: "${dateStr}" | CONTEXT: "${contextSnippet}" | PAGES: ${pages}`);
+        }
+
+        const datesBlock = dateEntries.join('\n');
+
+        // 2b. Setup LangChain ChatOllama
+        let ChatOllama;
+        try {
+            const module = await import('@langchain/ollama');
+            ChatOllama = module.ChatOllama;
+        } catch (err) {
+            console.error('[CivicVault] Failed to load @langchain/ollama:', err);
+            throw new Error('Failed to load local AI model integration. Did you run npm install?');
+        }
+
+        const jsonSchema = {
+            type: "object",
+            properties: {
+                timeline: {
+                    type: "array",
+                    items: {
+                        type: "object",
+                        properties: {
+                            date: { type: "string" },
+                            event: { type: "string" },
+                            source: { type: "string" }
+                        },
+                        required: ["date", "event", "source"]
+                    }
+                }
+            },
+            required: ["timeline"]
+        };
+
+        const llm = new ChatOllama({
+            model: llmModel,
+            format: jsonSchema,
+            temperature: 0,
+            baseUrl: "http://localhost:11434",
+            numCtx: 4096,
+            numPredict: 4096
+        });
+
+        // 4. Send ONE focused LLM call: "Here are the dates I found. Describe each event."
+        const userMessage = `I found the following dates in a legal document. For EACH date below, write a one-sentence description of what happened on that date based on the surrounding context provided.
+
+You MUST include ALL ${foundDates.size} dates in your response. Do NOT skip any.
+
+${datesBlock}
+
+Output a JSON object with a "timeline" array. Each element must have "date", "event", and "source" keys.`;
+
+        console.log(`[CivicVault] Generating timeline with ${llmModel} (${foundDates.size} pre-extracted dates)...`);
+        try {
+            const response = await llm.invoke([
+                ["user", userMessage]
+            ]);
+
+            console.log('\n[CivicVault] --- RAW OLLAMA TIMELINE OUTPUT ---');
+            console.log(response.content);
+            console.log('-------------------------------------------------\n');
+
+            let events = this.stripJsonMarkdown(response.content);
+
+            // 5. Safety net: if the LLM STILL didn't return all dates, manually inject the missing ones
+            const llmDates = new Set(events.map(e => e.date));
+            for (const [dateStr, data] of foundDates) {
+                if (!llmDates.has(dateStr)) {
+                    const contextSnippet = data.contexts[0] || '';
+                    const pages = [...data.pages].sort((a, b) => a - b);
+                    events.push({
+                        date: dateStr,
+                        event: contextSnippet.length > 200 ? contextSnippet.substring(0, 200) + '...' : contextSnippet,
+                        source: `Page ${pages[0] || 'Unknown'}`
+                    });
+                }
+            }
+
+            return events;
+        } catch (err) {
+            console.error('[CivicVault] LLM timeline failed, falling back to regex-only:', err);
+
+            // FALLBACK: If the LLM fails entirely, just return the regex-found dates with raw context
+            if (err.message && err.message.includes('not found')) {
+                throw new Error(`Model '${llmModel}' is not installed in Ollama. Please run: ollama run ${llmModel}`);
+            }
+
+            const fallbackEvents = [];
+            for (const [dateStr, data] of foundDates) {
+                const pages = [...data.pages].sort((a, b) => a - b);
+                fallbackEvents.push({
+                    date: dateStr,
+                    event: data.contexts[0] || 'Event mentioned in document',
+                    source: `Page ${pages[0] || 'Unknown'}`
+                });
+            }
+            return fallbackEvents;
+        }
+    }
+
+    /**
+     * Pure LLM fallback for when regex finds no dates (unlikely).
+     */
+    async _llmOnlyTimeline(llmModel, results) {
+        let ChatOllama;
+        try {
+            const module = await import('@langchain/ollama');
+            ChatOllama = module.ChatOllama;
+        } catch (err) {
+            throw new Error('Failed to load local AI model integration.');
+        }
+
+        const context = results
+            .slice(0, 10)
+            .map((r) => `--- PAGE ${r.document.metadata.page} ---\n${r.document.pageContent}`)
+            .join('\n\n');
+
+        const jsonSchema = {
+            type: "object",
+            properties: {
+                timeline: {
+                    type: "array",
+                    items: {
+                        type: "object",
+                        properties: {
+                            date: { type: "string" },
+                            event: { type: "string" },
+                            source: { type: "string" }
+                        },
+                        required: ["date", "event", "source"]
+                    }
+                }
+            },
+            required: ["timeline"]
+        };
+
+        const llm = new ChatOllama({
+            model: llmModel,
+            format: jsonSchema,
+            temperature: 0,
+            baseUrl: "http://localhost:11434",
+            numCtx: 4096,
+            numPredict: 4096
+        });
+
+        const userMessage = `Extract a chronological timeline from the document below. Find every event.\n\nDocument:\n---\n${context}\n---`;
+        const response = await llm.invoke([["user", userMessage]]);
+        return this.stripJsonMarkdown(response.content);
+    }
+
     getVectorStore() {
         return this.vectorStore;
     }

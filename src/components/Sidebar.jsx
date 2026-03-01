@@ -6,6 +6,7 @@ import {
     HiOutlineShieldCheck,
     HiOutlineDocumentText,
     HiOutlineQuestionMarkCircle,
+    HiOutlineClock,
 } from 'react-icons/hi2';
 
 const navItems = [
@@ -20,6 +21,12 @@ const navItems = [
         label: 'Search',
         icon: HiOutlineMagnifyingGlass,
         description: 'Query your documents',
+    },
+    {
+        id: 'timeline',
+        label: 'Timeline',
+        icon: HiOutlineClock,
+        description: '1-Click Chronology',
     },
 ];
 
