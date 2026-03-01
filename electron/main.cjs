@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const { profileSystem } = require('./hardwareScanner.cjs');
+const { executeRoutedInference } = require('./inferenceRouter.cjs');
 
 // ── Catch-all error handlers (prevent silent exits) ──────────────────
 process.on('uncaughtException', (err) => {
@@ -104,9 +105,33 @@ function createWindow() {
     // ── Generate Timeline ───────────────────────────────────────────────
     ipcMain.handle('vault:generate-timeline', async (event, { llmModel }) => {
         try {
+            // Step 1: Route inference through hardware router
+            event.sender.send('timeline:progress', {
+                phase: 'routing',
+                message: 'Hardware Router: Detecting optimal backend…',
+            });
+
+            const routingData = await executeRoutedInference('Timeline extraction', 'timeline');
+
+            event.sender.send('timeline:progress', {
+                phase: 'routing',
+                message: `Hardware Router: Offloading to ${routingData.routedBackend} on ${routingData.hardware}…`,
+                routing: routingData,
+            });
+
+            // Brief pause to let user see the routing message
+            await new Promise(res => setTimeout(res, 600));
+
+            // Step 2: Run the actual extraction
+            event.sender.send('timeline:progress', {
+                phase: 'extracting',
+                message: 'Analyzing documents & extracting timeline…',
+                routing: routingData,
+            });
+
             const engine = getIngestionEngine();
             const timeline = await engine.extractTimeline(llmModel || 'llama3.2');
-            return { success: true, timeline };
+            return { success: true, timeline, routing: routingData };
         } catch (err) {
             console.error('[Main process] Timeline generation failed:', err);
             return { success: false, error: err.message };

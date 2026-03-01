@@ -1,13 +1,31 @@
-import React, { useState } from 'react';
-import { HiOutlineClock, HiOutlineDocumentText, HiOutlineExclamationTriangle } from 'react-icons/hi2';
+import React, { useState, useEffect, useRef } from 'react';
+import { HiOutlineClock, HiOutlineDocumentText, HiOutlineExclamationTriangle, HiCpuChip } from 'react-icons/hi2';
 
 export default function TimelineView({ vaultFiles }) {
     const [timelineEvents, setTimelineEvents] = useState(null);
     const [isGenerating, setIsGenerating] = useState(false);
     const [error, setError] = useState(null);
     const [selectedModel, setSelectedModel] = useState('llama3.2'); // default model
+    const [progressMessage, setProgressMessage] = useState('');
+    const [routingInfo, setRoutingInfo] = useState(null);
+    const cleanupRef = useRef(null);
 
     const isElectron = Boolean(window.electronAPI);
+
+    // Listen for timeline progress IPC events
+    useEffect(() => {
+        if (!isElectron || !window.electronAPI.onTimelineProgress) return;
+
+        const cleanup = window.electronAPI.onTimelineProgress((data) => {
+            setProgressMessage(data.message || '');
+            if (data.routing) {
+                setRoutingInfo(data.routing);
+            }
+        });
+
+        cleanupRef.current = cleanup;
+        return () => cleanup?.();
+    }, [isElectron]);
 
     const handleGenerate = async () => {
         if (!isElectron) {
@@ -22,12 +40,15 @@ export default function TimelineView({ vaultFiles }) {
 
         setIsGenerating(true);
         setError(null);
+        setProgressMessage('Initializing hardware router…');
+        setRoutingInfo(null);
 
         try {
             const result = await window.electronAPI.generateTimeline(selectedModel);
 
             if (result.success && Array.isArray(result.timeline)) {
                 setTimelineEvents(result.timeline);
+                if (result.routing) setRoutingInfo(result.routing);
             } else {
                 setError(result.error || 'Failed to generate timeline. LLM returned invalid format.');
             }
@@ -36,6 +57,7 @@ export default function TimelineView({ vaultFiles }) {
             setError('An error occurred while communicating with the local AI.');
         } finally {
             setIsGenerating(false);
+            setProgressMessage('');
         }
     };
 
@@ -107,11 +129,25 @@ export default function TimelineView({ vaultFiles }) {
                     </div>
                 )}
 
-                {/* Loading Skeleton */}
+                {/* Loading Skeleton with Routing Status */}
                 {isGenerating && (
                     <div className="max-w-3xl mx-auto py-8">
-                        <div className="text-center mb-10 animate-pulse">
-                            <p className="text-vault-400 font-medium">Analyzing documents...</p>
+                        <div className="text-center mb-10">
+                            {/* Routing Status Badge */}
+                            {routingInfo && (
+                                <div className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-500/10 border border-cyan-500/20 mb-4 animate-fade-in">
+                                    <HiCpuChip className="w-4 h-4 text-cyan-400 animate-pulse" />
+                                    <span className="text-xs font-mono text-cyan-300">
+                                        {routingInfo.routedBackend} · {routingInfo.hardware}
+                                    </span>
+                                    <span className="text-[10px] text-cyan-500/70 uppercase tracking-wider">
+                                        {routingInfo.status}
+                                    </span>
+                                </div>
+                            )}
+                            <p className="text-vault-400 font-medium animate-pulse">
+                                {progressMessage || 'Analyzing documents…'}
+                            </p>
                             <p className="text-xs text-dark-500 mt-1">This may take a minute depending on your hardware.</p>
                         </div>
                         <div className="relative pl-8 border-l-2 border-dark-800 space-y-8">

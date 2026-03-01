@@ -29,6 +29,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getVaultFiles: () => ipcRenderer.invoke('vault:get-files'),
     generateTimeline: (llmModel) => ipcRenderer.invoke('vault:generate-timeline', { llmModel }),
 
+    // ── Timeline Progress (routing status) ────────────────────────
+    onTimelineProgress: (callback) => {
+        const handler = (_event, data) => callback(data);
+        ipcRenderer.on('timeline:progress', handler);
+        return () => ipcRenderer.removeListener('timeline:progress', handler);
+    },
+
     // ── Ollama Health Check ───────────────────────────────────────
     checkOllamaHealth: () => ipcRenderer.invoke('ollama:health'),
 
