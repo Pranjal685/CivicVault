@@ -32,6 +32,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // ── Ollama Health Check ───────────────────────────────────────
     checkOllamaHealth: () => ipcRenderer.invoke('ollama:health'),
 
+    // ── Hardware Profile ──────────────────────────────────────────
+    getSystemProfile: () => ipcRenderer.invoke('system:get-profile'),
+
     // ── Search ────────────────────────────────────────────────────
     searchVault: (query, chatHistory, llmModel) => ipcRenderer.invoke('search:query', { query, chatHistory, llmModel }),
 

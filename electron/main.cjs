@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
+const { profileSystem } = require('./hardwareScanner.cjs');
 
 // ── Catch-all error handlers (prevent silent exits) ──────────────────
 process.on('uncaughtException', (err) => {
@@ -200,7 +201,27 @@ if (!gotLock) {
         }
     });
 
-    app.whenReady().then(createWindow);
+    app.whenReady().then(async () => {
+        createWindow();
+
+        // ── Hardware Profiling on Startup ──────────────────────────
+        try {
+            const profile = await profileSystem();
+            console.log('[CivicVault] System profiled successfully.');
+        } catch (err) {
+            console.error('[CivicVault] Hardware profiling failed:', err.message);
+        }
+
+        // ── System Profile IPC Handler ─────────────────────────────
+        ipcMain.handle('system:get-profile', async () => {
+            try {
+                return await profileSystem();
+            } catch (err) {
+                console.error('[CivicVault] Profile request failed:', err.message);
+                return { backend: 'CPU (OpenBLAS)', tier: 'lite', tierLabel: 'Lite Tier (3.8B · 4-bit)', totalRamGB: 0, gpus: [], primaryGpu: 'Unknown', gpuVendor: 'Unknown', platform: process.platform };
+            }
+        });
+    });
 
     app.on('window-all-closed', () => {
         if (process.platform !== 'darwin') app.quit();

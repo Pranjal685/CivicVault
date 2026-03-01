@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     HiOutlineArchiveBox,
     HiOutlineMagnifyingGlass,
@@ -7,6 +7,7 @@ import {
     HiOutlineDocumentText,
     HiOutlineQuestionMarkCircle,
     HiOutlineClock,
+    HiCpuChip,
 } from 'react-icons/hi2';
 
 const navItems = [
@@ -39,6 +40,17 @@ export default function Sidebar({ activeView, onNavigate, vaultFiles = [] }) {
     const fileCount = vaultFiles.length;
     // Progress bar: cap at 20 files for visual, or just show proportional
     const progressWidth = fileCount > 0 ? Math.min((fileCount / 20) * 100, 100) : 0;
+
+    // ── Hardware Profile State ────────────────────────────────────────
+    const [hwProfile, setHwProfile] = useState(null);
+
+    useEffect(() => {
+        if (window.electronAPI?.getSystemProfile) {
+            window.electronAPI.getSystemProfile()
+                .then(setHwProfile)
+                .catch((err) => console.error('Hardware profile failed:', err));
+        }
+    }, []);
 
     return (
         <aside className="w-64 h-full flex flex-col bg-dark-950 border-r border-dark-800/50 shrink-0 animate-slide-in-left">
@@ -159,6 +171,46 @@ export default function Sidebar({ activeView, onNavigate, vaultFiles = [] }) {
                     )}
                 </div>
             </nav>
+
+            {/* Hardware Status Badge */}
+            <div className="px-3 pb-2">
+                {hwProfile ? (
+                    <div
+                        className="group relative glass-subtle rounded-xl p-2.5 cursor-help"
+                        title={`Routed to: ${hwProfile.backend} | RAM: ${hwProfile.totalRamGB}GB | GPUs: ${hwProfile.gpus.join(', ') || 'None'}`}
+                    >
+                        <div className="flex items-center gap-2.5">
+                            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-cyan-500/20 to-blue-600/20 border border-cyan-500/20 flex items-center justify-center shrink-0">
+                                <HiCpuChip className="w-4 h-4 text-cyan-400" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                                <p className="text-[10px] font-semibold text-dark-300 truncate">
+                                    {hwProfile.primaryGpu || 'CPU Only'}
+                                </p>
+                                <p className="text-[9px] text-dark-500 truncate">
+                                    {hwProfile.tierLabel}
+                                </p>
+                            </div>
+                        </div>
+                        {/* Tooltip on hover */}
+                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 rounded-lg bg-dark-900 border border-dark-700 shadow-xl opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap z-50">
+                            <p className="text-[10px] text-cyan-400 font-semibold">Routed to: {hwProfile.backend}</p>
+                            <p className="text-[9px] text-dark-400 mt-0.5">{hwProfile.totalRamGB}GB RAM · {hwProfile.gpuVendor}</p>
+                            <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-2 h-2 rotate-45 bg-dark-900 border-r border-b border-dark-700"></div>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="glass-subtle rounded-xl p-2.5 animate-pulse">
+                        <div className="flex items-center gap-2.5">
+                            <div className="w-7 h-7 rounded-lg bg-dark-800"></div>
+                            <div className="flex-1">
+                                <div className="h-2.5 bg-dark-800 rounded w-3/4 mb-1.5"></div>
+                                <div className="h-2 bg-dark-800 rounded w-1/2"></div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
 
             {/* Bottom Actions */}
             <div className="px-3 pb-4 border-t border-dark-800/50 pt-3 space-y-0.5">
