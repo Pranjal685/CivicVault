@@ -124,8 +124,12 @@ export default function App() {
                             onBrowseFiles={handleBrowseFiles}
                         />
                     )}
-                    {activeView === 'search' && <SearchView />}
-                    {activeView === 'timeline' && <TimelineView vaultFiles={vaultFiles} />}
+                    <div style={{ display: activeView === 'search' ? 'block' : 'none', height: '100%' }}>
+                        <SearchView />
+                    </div>
+                    <div style={{ display: activeView === 'timeline' ? 'block' : 'none', height: '100%' }}>
+                        <TimelineView vaultFiles={vaultFiles} />
+                    </div>
                 </main>
             </div>
         </div>
