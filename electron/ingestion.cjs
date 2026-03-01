@@ -324,6 +324,102 @@ class IngestionEngine {
         const pdfData = await pdfParse(buffer, { pagerender: renderPage });
         const numPages = pdfData.numpages;
 
+        // ── Step 1b: OCR Fallback for Scanned Pages ───────────────────
+        // Detect scanned pages (extracted text < 50 chars) and run local OCR
+        const scannedPageIndices = [];
+        for (let i = 0; i < pageTexts.length; i++) {
+            if (pageTexts[i].trim().length < 50) {
+                scannedPageIndices.push(i);
+            }
+        }
+
+        if (scannedPageIndices.length > 0) {
+            console.log(`[CivicVault] Detected ${scannedPageIndices.length} scanned page(s): ${scannedPageIndices.map(i => i + 1).join(', ')}. Running OCR...`);
+            onProgress({
+                status: 'ocr',
+                message: `Detected ${scannedPageIndices.length} scanned page(s). Initializing Local OCR…`,
+            });
+
+            // Dynamically import ESM modules
+            let convertToImages, Tesseract;
+            try {
+                const pdfImgModule = await import('pdf-to-image-generator');
+                convertToImages = pdfImgModule.convertToImages;
+            } catch (err) {
+                console.error('[CivicVault] Failed to load pdf-to-image-generator:', err);
+                throw new Error('Failed to load PDF-to-image library. Did you run npm install?');
+            }
+            try {
+                Tesseract = require('tesseract.js');
+            } catch (err) {
+                console.error('[CivicVault] Failed to load tesseract.js:', err);
+                throw new Error('Failed to load Tesseract OCR library. Did you run npm install?');
+            }
+
+            // Convert ONLY the scanned pages to images (0-indexed for pdf-to-image-generator)
+            onProgress({
+                status: 'ocr',
+                message: `Converting ${scannedPageIndices.length} scanned page(s) to images…`,
+            });
+
+            let pageImages;
+            try {
+                const result = await convertToImages(filePath, {
+                    pages: scannedPageIndices, // 0-indexed
+                    scale: 2, // Higher resolution for better OCR accuracy
+                    type: 'png',
+                    includeBufferContent: true,
+                });
+                pageImages = result;
+            } catch (err) {
+                console.error('[CivicVault] PDF-to-image conversion failed:', err);
+                throw new Error('Failed to convert scanned PDF pages to images for OCR.');
+            }
+
+            // Initialize a SINGLE Tesseract worker (performance optimization)
+            onProgress({
+                status: 'ocr',
+                message: 'Starting Tesseract OCR engine (first run downloads ~4MB language data)…',
+            });
+
+            const worker = await Tesseract.createWorker('eng');
+
+            // Run OCR on each scanned page image
+            for (let idx = 0; idx < pageImages.length; idx++) {
+                const img = pageImages[idx];
+                const pageNum = scannedPageIndices[idx] + 1; // 1-indexed for display
+
+                onProgress({
+                    status: 'ocr',
+                    message: `Running Local OCR on Page ${pageNum}… (${idx + 1}/${scannedPageIndices.length}) This may take a moment.`,
+                    progress: idx + 1,
+                    total: scannedPageIndices.length,
+                });
+
+                try {
+                    const { data: { text } } = await worker.recognize(Buffer.from(img.content));
+                    const ocrText = text.trim();
+                    console.log(`[CivicVault] OCR Page ${pageNum}: extracted ${ocrText.length} chars`);
+
+                    if (ocrText.length > 0) {
+                        pageTexts[scannedPageIndices[idx]] = ocrText;
+                    }
+                } catch (ocrErr) {
+                    console.error(`[CivicVault] OCR failed for page ${pageNum}:`, ocrErr.message);
+                    // Leave the original (short) text — don't crash the pipeline
+                }
+            }
+
+            // Terminate the worker to free RAM
+            await worker.terminate();
+            console.log('[CivicVault] Tesseract worker terminated. OCR complete.');
+
+            onProgress({
+                status: 'ocr',
+                message: `OCR complete. Extracted text from ${scannedPageIndices.length} scanned page(s).`,
+            });
+        }
+
         // ── Step 2: Store each page as a single document ──────────────
         // Each page is 500-2000 chars — well within embedding model limits.
         // This preserves full page context and avoids splitting related content.
@@ -342,6 +438,7 @@ class IngestionEngine {
                     page: pageIdx + 1,
                     pageLabel: `Page ${pageIdx + 1}`,
                     totalPages: numPages,
+                    ocrExtracted: scannedPageIndices.length > 0 && scannedPageIndices.includes(pageIdx),
                 },
             });
         }
@@ -384,6 +481,7 @@ class IngestionEngine {
             numPages,
             numChunks: totalChunks,
             hash: fileHash,
+            ocrPages: scannedPageIndices.length,
             ingestedAt: new Date().toISOString(),
         };
 
