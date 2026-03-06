@@ -4,11 +4,13 @@ import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import SearchView from './components/SearchView';
 import TimelineView from './components/TimelineView';
+import SetupView from './components/SetupView';
 
 // Check if running inside Electron
 const isElectron = Boolean(window.electronAPI);
 
 export default function App() {
+    const [isFirstBoot, setIsFirstBoot] = useState(true);
     const [activeView, setActiveView] = useState('vault');
     const [vaultFiles, setVaultFiles] = useState([]);
     const [processingFile, setProcessingFile] = useState(null);
@@ -99,39 +101,48 @@ export default function App() {
         <div className="h-screen w-screen flex flex-col bg-dark-975 overflow-hidden">
             <TitleBar />
 
-            {/* Browser mode warning banner */}
-            {!isElectron && (
-                <div className="shrink-0 px-4 py-2 bg-vault-500/10 border-b border-vault-500/20 text-center">
-                    <p className="text-xs text-vault-400">
-                        ⚠ Running in browser preview mode — PDF ingestion requires the Electron app window.
-                    </p>
+            {/* First Boot Setup Screen */}
+            {isFirstBoot ? (
+                <div className="flex-1 overflow-hidden">
+                    <SetupView onComplete={() => setIsFirstBoot(false)} />
                 </div>
-            )}
-
-            <div className="flex flex-1 overflow-hidden">
-                <Sidebar
-                    activeView={activeView}
-                    onNavigate={setActiveView}
-                    vaultFiles={vaultFiles}
-                />
-
-                <main className="flex-1 overflow-hidden">
-                    {activeView === 'vault' && (
-                        <Dashboard
-                            vaultFiles={vaultFiles}
-                            processingFile={processingFile}
-                            onProcessFile={handleProcessFile}
-                            onBrowseFiles={handleBrowseFiles}
-                        />
+            ) : (
+                <>
+                    {/* Browser mode warning banner */}
+                    {!isElectron && (
+                        <div className="shrink-0 px-4 py-2 bg-vault-500/10 border-b border-vault-500/20 text-center">
+                            <p className="text-xs text-vault-400">
+                                ⚠ Running in browser preview mode — PDF ingestion requires the Electron app window.
+                            </p>
+                        </div>
                     )}
-                    <div style={{ display: activeView === 'search' ? 'block' : 'none', height: '100%' }}>
-                        <SearchView />
+
+                    <div className="flex flex-1 overflow-hidden">
+                        <Sidebar
+                            activeView={activeView}
+                            onNavigate={setActiveView}
+                            vaultFiles={vaultFiles}
+                        />
+
+                        <main className="flex-1 overflow-hidden">
+                            {activeView === 'vault' && (
+                                <Dashboard
+                                    vaultFiles={vaultFiles}
+                                    processingFile={processingFile}
+                                    onProcessFile={handleProcessFile}
+                                    onBrowseFiles={handleBrowseFiles}
+                                />
+                            )}
+                            <div style={{ display: activeView === 'search' ? 'block' : 'none', height: '100%' }}>
+                                <SearchView />
+                            </div>
+                            <div style={{ display: activeView === 'timeline' ? 'block' : 'none', height: '100%' }}>
+                                <TimelineView vaultFiles={vaultFiles} />
+                            </div>
+                        </main>
                     </div>
-                    <div style={{ display: activeView === 'timeline' ? 'block' : 'none', height: '100%' }}>
-                        <TimelineView vaultFiles={vaultFiles} />
-                    </div>
-                </main>
-            </div>
+                </>
+            )}
         </div>
     );
 }
