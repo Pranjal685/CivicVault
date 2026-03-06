@@ -626,7 +626,7 @@ class IngestionEngine {
      * Each result is tagged with its retrieval method for UI transparency.
      */
     async search(query, k = 8, caseId = null) {
-        if (this.vectorStore.size() === 0) {
+        if (this.vectorStore.size === 0) {
             return [];
         }
 
@@ -965,8 +965,12 @@ class IngestionEngine {
             };
         }
 
-        // Try subject section detection first (handles multi-page syllabus content)
-        const sectionPages = this.findSubjectSection(query);
+        // Skip expensive section detection for small docs (< 30 pages)
+        // and when no multi-page syllabus structure is expected
+        let sectionPages = [];
+        if (this.vectorStore.size > 30) {
+            sectionPages = this.findSubjectSection(query);
+        }
 
         // Use section pages for LLM context if found, otherwise top 5 search results
         const llmChunks = sectionPages.length > 0
@@ -977,10 +981,16 @@ class IngestionEngine {
             `Page ${r.document.metadata.page}`
         ).join(', '));
 
-        // ── Step 2: Format page content ───────────────────────────────
+        // ── Step 2: Format page content (compressed) ─────────────────
         const contextParts = llmChunks.map((r) => {
             const m = r.document.metadata;
-            return `[Page ${m.page}]\n${r.document.pageContent}`;
+            // Compress whitespace to reduce token count and LLM processing time
+            const compressed = r.document.pageContent
+                .replace(/\n{3,}/g, '\n\n')       // collapse triple+ newlines
+                .replace(/[ \t]{2,}/g, ' ')       // collapse multiple spaces/tabs
+                .replace(/^\s+$/gm, '')           // remove whitespace-only lines
+                .trim();
+            return `[Page ${m.page}]\n${compressed}`;
         });
         const context = contextParts.join('\n\n---\n\n');
 
@@ -1399,8 +1409,8 @@ function ollamaChatStream(messages, model = 'llama3', onToken = null, baseUrl = 
             messages,
             stream: true,
             options: {
-                num_predict: 4096,
-                num_ctx: 4096,      // reduced from 8192 — prevents CUDA OOM
+                num_predict: 1024,   // reduced from 4096 — legal answers rarely need more
+                num_ctx: 2048,       // reduced from 4096 — prevents VRAM swapping on 4GB GPUs
                 temperature: 0,
             },
         });
