@@ -1037,20 +1037,37 @@ OUTPUT RULES:
         const adaptiveNumCtx = estimatedInputTokens + adaptiveNumPredict + 256;
 
         // ── Option 1: VRAM-Aware Preemptive CPU Routing ───────────────
-        // A 7B model at 5-bit quant uses ~4GB VRAM. Each 1K tokens of context
-        // needs ~50MB VRAM. If the remaining VRAM can't handle the context,
-        // force CPU inference to prevent CUDA OOM.
-        const MODEL_FOOTPRINT_MB = 3800; // ~3.8GB for 7B 5-bit model
+        // Two layers of defense:
+        //   A) Universal safety: if context > 2048 tokens → force CPU
+        //      (GPUs under 8GB can't handle 7B model + large context)
+        //   B) VRAM-based: if we know the VRAM, do an exact check
+        const SAFE_GPU_CTX_LIMIT = 2048; // safe for most GPUs with 7B models
+        const MODEL_FOOTPRINT_MB = 3800;
         const MB_PER_1K_TOKENS = 50;
-        const requiredVRAM = MODEL_FOOTPRINT_MB + (adaptiveNumCtx / 1000) * MB_PER_1K_TOKENS;
-        const isGPU = this._gpuBackend.includes('CUDA') || this._gpuBackend.includes('DirectML') || this._gpuBackend.includes('ROCm');
-        const vramSafe = this._vramMB > 0 && requiredVRAM < this._vramMB;
-        const forceCPU = isGPU && !vramSafe;
+
+        let forceCPU = false;
+        let forceReason = '';
+
+        // Layer A: Universal safety — large context always uses CPU
+        if (adaptiveNumCtx > SAFE_GPU_CTX_LIMIT) {
+            forceCPU = true;
+            forceReason = `context ${adaptiveNumCtx} exceeds safe GPU limit ${SAFE_GPU_CTX_LIMIT}`;
+        }
+
+        // Layer B: VRAM-based check (when profile IS loaded)
+        if (!forceCPU && this._vramMB > 0) {
+            const requiredVRAM = MODEL_FOOTPRINT_MB + (adaptiveNumCtx / 1000) * MB_PER_1K_TOKENS;
+            const isGPU = this._gpuBackend.includes('CUDA') || this._gpuBackend.includes('DirectML') || this._gpuBackend.includes('ROCm');
+            if (isGPU && requiredVRAM >= this._vramMB) {
+                forceCPU = true;
+                forceReason = `need ~${Math.round(requiredVRAM)}MB VRAM, have ${this._vramMB}MB`;
+            }
+        }
 
         if (forceCPU) {
-            console.log(`[CivicVault] ⚠️ VRAM ceiling exceeded: need ~${Math.round(requiredVRAM)}MB, have ${this._vramMB}MB. Routing to CPU.`);
+            console.log(`[CivicVault] ⚠️ CPU routing: ${forceReason}. Setting num_gpu=0.`);
         } else {
-            console.log(`[CivicVault] Adaptive LLM config: ~${estimatedInputTokens} input tokens, num_ctx=${adaptiveNumCtx}, num_predict=${adaptiveNumPredict}${isGPU ? ' (GPU)' : ' (CPU)'}`);
+            console.log(`[CivicVault] Adaptive LLM: ~${estimatedInputTokens} input tokens, num_ctx=${adaptiveNumCtx}, num_predict=${adaptiveNumPredict} (GPU)`);
         }
 
         const llmOptions = {
