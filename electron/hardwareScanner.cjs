@@ -26,6 +26,7 @@ async function profileSystem() {
     // Detect primary GPU vendor from all controllers
     let detectedVendor = 'Unknown';
     let detectedModel = '';
+    let detectedVramMB = 0;
 
     for (const controller of gpuControllers) {
         const vendor = (controller.vendor || '').toUpperCase();
@@ -34,15 +35,18 @@ async function profileSystem() {
         if (vendor.includes('NVIDIA') || model.includes('NVIDIA') || model.includes('GEFORCE') || model.includes('RTX') || model.includes('GTX')) {
             detectedVendor = 'NVIDIA';
             detectedModel = controller.model || controller.name;
+            detectedVramMB = controller.vram || 0;
             break; // NVIDIA takes priority
         } else if (vendor.includes('AMD') || vendor.includes('ADVANCED MICRO') || model.includes('RADEON') || model.includes('RX ')) {
             detectedVendor = 'AMD';
             detectedModel = controller.model || controller.name;
+            detectedVramMB = controller.vram || 0;
             // Don't break — NVIDIA might be found next
         } else if (vendor.includes('INTEL') || model.includes('INTEL') || model.includes('UHD') || model.includes('IRIS')) {
             if (detectedVendor === 'Unknown') {
                 detectedVendor = 'Intel';
                 detectedModel = controller.model || controller.name;
+                detectedVramMB = controller.vram || 0;
             }
         }
     }
@@ -87,6 +91,7 @@ async function profileSystem() {
         tier,
         tierLabel,
         totalRamGB,
+        vramMB: detectedVramMB,
         gpus: gpuModels,
         primaryGpu: detectedModel || 'Integrated',
         gpuVendor: detectedVendor,
@@ -95,6 +100,7 @@ async function profileSystem() {
 
     console.log('[CivicVault] ═══ Hardware Profile ═══');
     console.log(`  GPU:     ${detectedModel || 'No discrete GPU'} (${detectedVendor})`);
+    console.log(`  VRAM:    ${detectedVramMB} MB`);
     console.log(`  RAM:     ${totalRamGB} GB`);
     console.log(`  Backend: ${backend}`);
     console.log(`  Tier:    ${tierLabel}`);
