@@ -18,6 +18,12 @@ function getIngestionEngine() {
     if (!ingestionEngine) {
         const { IngestionEngine } = require('./ingestion.cjs');
         ingestionEngine = new IngestionEngine();
+        // Set userData path for persistent MiniSearch indices
+        try {
+            ingestionEngine.setUserDataPath(app.getPath('userData'));
+        } catch (e) {
+            console.error('[CivicVault] Failed to set userData path:', e.message);
+        }
     }
     return ingestionEngine;
 }

@@ -13,7 +13,8 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
-const crypto = require('crypto'); // Added crypto module
+const crypto = require('crypto');
+const MiniSearch = require('minisearch');
 
 // ═══════════════════════════════════════════════════════════════════════
 // 1. EMBEDDINGS — Direct API call to Ollama
@@ -281,6 +282,73 @@ class IngestionEngine {
         // LRU response cache — top 50 queries, cleared on new ingestion
         this._cache = new Map();
         this._cacheMax = 50;
+        // Per-case MiniSearch instances (loaded from disk on demand)
+        this._miniSearchInstances = new Map();
+        // userData path — set via setUserDataPath() from main.cjs
+        this._userDataPath = null;
+    }
+
+    /**
+     * Set the userData directory for persistent index storage.
+     * @param {string} dirPath - app.getPath('userData')
+     */
+    setUserDataPath(dirPath) {
+        this._userDataPath = dirPath;
+        // Ensure keyword_indices directory exists
+        const indexDir = path.join(dirPath, 'keyword_indices');
+        if (!fs.existsSync(indexDir)) {
+            fs.mkdirSync(indexDir, { recursive: true });
+        }
+    }
+
+    /**
+     * Get or load a MiniSearch instance for a specific case.
+     * @param {string} caseId
+     * @returns {MiniSearch|null}
+     */
+    _getMiniSearch(caseId) {
+        if (!caseId) return null;
+
+        if (this._miniSearchInstances.has(caseId)) {
+            return this._miniSearchInstances.get(caseId);
+        }
+
+        // Try loading from disk
+        if (this._userDataPath) {
+            const indexPath = path.join(this._userDataPath, 'keyword_indices', `keyword_index_${caseId}.json`);
+            if (fs.existsSync(indexPath)) {
+                try {
+                    const json = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
+                    const ms = MiniSearch.loadJSON(JSON.stringify(json), {
+                        fields: ['text'],
+                        storeFields: ['text', 'page', 'source', 'chunkIndex'],
+                    });
+                    this._miniSearchInstances.set(caseId, ms);
+                    console.log(`[CivicVault] Loaded MiniSearch index for case ${caseId.substring(0, 8)} (${ms.documentCount} docs)`);
+                    return ms;
+                } catch (err) {
+                    console.error(`[CivicVault] Failed to load MiniSearch index:`, err.message);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Persist a MiniSearch instance to disk.
+     * @param {string} caseId
+     * @param {MiniSearch} ms
+     */
+    _saveMiniSearch(caseId, ms) {
+        if (!this._userDataPath || !caseId) return;
+        const indexPath = path.join(this._userDataPath, 'keyword_indices', `keyword_index_${caseId}.json`);
+        try {
+            fs.writeFileSync(indexPath, JSON.stringify(ms.toJSON()), 'utf-8');
+            console.log(`[CivicVault] Saved MiniSearch index for case ${caseId.substring(0, 8)} (${ms.documentCount} docs)`);
+        } catch (err) {
+            console.error(`[CivicVault] Failed to save MiniSearch index:`, err.message);
+        }
     }
 
     /**
@@ -476,7 +544,7 @@ class IngestionEngine {
             });
         }
 
-        // ── Done ──────────────────────────────────────────────────────
+        // ── Done ────────────────────────────────────────────────────────
         const fileInfo = {
             name: fileName,
             path: filePath,
@@ -489,99 +557,209 @@ class IngestionEngine {
 
         this.ingestedFiles.push(fileInfo);
 
+        // ── Step 4: Build/update MiniSearch keyword index ─────────────
+        if (caseId) {
+            onProgress({ status: 'indexing', message: 'Building keyword search index…' });
+
+            let ms = this._getMiniSearch(caseId);
+            if (!ms) {
+                ms = new MiniSearch({
+                    fields: ['text'],
+                    storeFields: ['text', 'page', 'source', 'chunkIndex'],
+                    searchOptions: {
+                        boost: { text: 1 },
+                        fuzzy: 0.2,
+                        prefix: true,
+                    },
+                });
+            }
+
+            // Add documents to MiniSearch (using unique IDs)
+            const msDocuments = documents.map((doc, idx) => ({
+                id: `${caseId}_${fileName}_${idx}`,
+                text: doc.pageContent,
+                page: doc.metadata.page,
+                source: doc.metadata.source,
+                chunkIndex: doc.metadata.chunkIndex,
+            }));
+
+            // Filter out any docs with IDs that already exist
+            const existingIds = new Set();
+            try {
+                msDocuments.forEach(d => {
+                    if (!ms.has(d.id)) {
+                        existingIds.add(d.id);
+                    }
+                });
+            } catch (e) { /* ms.has may not exist in all versions */ }
+
+            try {
+                ms.addAll(msDocuments.filter(d => existingIds.has(d.id) || !existingIds.size));
+            } catch (e) {
+                // If duplicates, replace the whole index for this case
+                ms = new MiniSearch({
+                    fields: ['text'],
+                    storeFields: ['text', 'page', 'source', 'chunkIndex'],
+                    searchOptions: { boost: { text: 1 }, fuzzy: 0.2, prefix: true },
+                });
+                ms.addAll(msDocuments);
+            }
+
+            this._miniSearchInstances.set(caseId, ms);
+            this._saveMiniSearch(caseId, ms);
+
+            console.log(`[CivicVault] MiniSearch index: ${ms.documentCount} chunks for case ${caseId.substring(0, 8)}`);
+        }
+
         onProgress({ status: 'done', message: 'Ingestion complete!', fileInfo });
         return fileInfo;
     }
 
     /**
-     * HYBRID SEARCH — combines keyword + vector using Reciprocal Rank Fusion.
+     * HYBRID SEARCH — MiniSearch BM25 + Vector Cosine with Reciprocal Rank Fusion.
      *
-     * This solves the core problem: vector-only search can't distinguish between
-     * different subjects that all have "units and topics" — keyword search can,
-     * because it matches exact terms like "Linear Data Structures".
+     * Dual-query pipeline:
+     *   A. Vector search (semantic similarity) → top 15
+     *   B. MiniSearch BM25 (exact keyword matches) → top 15
+     *   C. RRF fusion → merged, deduplicated, top-k results
+     *
+     * Each result is tagged with its retrieval method for UI transparency.
      */
-    async search(query, k = 8) {
-        if (this.vectorStore.size === 0) {
+    async search(query, k = 8, caseId = null) {
+        if (this.vectorStore.size() === 0) {
             return [];
         }
 
-        // 1. Vector search — semantic similarity
+        const VECTOR_K = 15;
+        const KEYWORD_K = 15;
+        const RRF_K = 60;
+
+        // ── Step A: Vector search (semantic similarity) ───────────────
         const [queryEmbedding] = await ollamaEmbed([query]);
-        const vectorResults = await this.vectorStore.similaritySearch(queryEmbedding, k * 2);
+        const vectorResults = await this.vectorStore.similaritySearch(queryEmbedding, VECTOR_K);
 
-        // 2. Keyword search — BM25-style term matching
-        const keywordResults = this.vectorStore.keywordSearch(query, k * 2);
+        // ── Step B: MiniSearch BM25 keyword search ───────────────────
+        let miniSearchResults = [];
+        const ms = caseId ? this._getMiniSearch(caseId) : null;
 
-        // 3. Reciprocal Rank Fusion — merge both ranked lists
-        const RRF_K = 60; // standard RRF constant
-        const fusedScores = new Map(); // chunkIndex -> { score, document }
+        if (ms) {
+            try {
+                const msHits = ms.search(query, { limit: KEYWORD_K });
+                miniSearchResults = msHits.map(hit => ({
+                    chunkIndex: hit.chunkIndex,
+                    page: hit.page,
+                    source: hit.source,
+                    score: hit.score,
+                    text: hit.text,
+                }));
+                console.log(`[CivicVault] MiniSearch BM25: ${miniSearchResults.length} keyword hits for "${query.substring(0, 50)}"`);
+            } catch (err) {
+                console.error('[CivicVault] MiniSearch query failed:', err.message);
+            }
+        }
 
-        // Vector results get 1x weight
+        // Fallback to custom keyword search if MiniSearch not available
+        const fallbackKeywordResults = !ms ? this.vectorStore.keywordSearch(query, KEYWORD_K) : [];
+
+        // ── Step C: Reciprocal Rank Fusion ────────────────────────
+        const fusedScores = new Map(); // chunkIndex -> { score, document, methods }
+
+        // Vector results
         vectorResults.forEach((r, rank) => {
             const key = r.document.metadata.chunkIndex;
             if (!fusedScores.has(key)) {
-                fusedScores.set(key, { score: 0, document: r.document, vectorScore: r.score });
+                fusedScores.set(key, { score: 0, document: r.document, methods: [], vectorScore: r.score });
             }
             fusedScores.get(key).score += 1 / (RRF_K + rank + 1);
-        });
-
-        // Keyword results get 3x weight (exact matches should dominate)
-        keywordResults.forEach((r, rank) => {
-            const key = r.document.metadata.chunkIndex;
-            if (!fusedScores.has(key)) {
-                fusedScores.set(key, { score: 0, document: r.document, vectorScore: 0 });
+            if (!fusedScores.get(key).methods.includes('vector')) {
+                fusedScores.get(key).methods.push('vector');
             }
-            fusedScores.get(key).score += 3 / (RRF_K + rank + 1);
         });
 
-        // 4. Sort by fused score
+        // MiniSearch BM25 results (matched by chunkIndex back to vector store)
+        if (miniSearchResults.length > 0) {
+            miniSearchResults.forEach((hit, rank) => {
+                const key = hit.chunkIndex;
+                if (key === undefined) return;
+
+                if (!fusedScores.has(key)) {
+                    // Find the document from the vector store
+                    const entry = this.vectorStore.entries.find(
+                        e => e.document.metadata.chunkIndex === key
+                    );
+                    if (entry) {
+                        fusedScores.set(key, { score: 0, document: entry.document, methods: [], vectorScore: 0 });
+                    } else {
+                        return; // Skip if not found
+                    }
+                }
+                fusedScores.get(key).score += 3 / (RRF_K + rank + 1);
+                if (!fusedScores.get(key).methods.includes('keyword')) {
+                    fusedScores.get(key).methods.push('keyword');
+                }
+            });
+        }
+
+        // Fallback keyword results (when no MiniSearch)
+        if (fallbackKeywordResults.length > 0) {
+            fallbackKeywordResults.forEach((r, rank) => {
+                const key = r.document.metadata.chunkIndex;
+                if (!fusedScores.has(key)) {
+                    fusedScores.set(key, { score: 0, document: r.document, methods: [], vectorScore: 0 });
+                }
+                fusedScores.get(key).score += 3 / (RRF_K + rank + 1);
+                if (!fusedScores.get(key).methods.includes('keyword')) {
+                    fusedScores.get(key).methods.push('keyword');
+                }
+            });
+        }
+
+        // 4. Sort by fused score, tag with retrieval method
         const fused = [...fusedScores.values()]
             .sort((a, b) => b.score - a.score)
             .slice(0, k)
-            .map((r) => ({ score: r.score, document: r.document }));
+            .map((r) => ({
+                score: r.score,
+                document: r.document,
+                retrievalMethod: r.methods.length > 1 ? 'hybrid' : (r.methods[0] || 'vector'),
+            }));
 
-        // 5. SECTION EXPANSION — ensure consecutive pages from the best
-        //    keyword match are included. Syllabus content always spans
-        //    multiple consecutive pages (e.g., "Linear Data Structures" on
-        //    page 56, Units I-IV on page 57, Units V-VI on page 58).
-        const topKeywordPage = keywordResults.length > 0
-            ? keywordResults[0].document.metadata.page
-            : null;
+        // 5. SECTION EXPANSION — ensure consecutive pages from best keyword hit
+        const topKeywordPage = miniSearchResults.length > 0
+            ? miniSearchResults[0].page
+            : (fallbackKeywordResults.length > 0 ? fallbackKeywordResults[0].document.metadata.page : null);
 
         if (topKeywordPage) {
             const resultPages = new Set(fused.map(r => r.document.metadata.page));
             const pagesToAdd = [];
 
-            // Include the next 3 pages after the top keyword match
             for (let delta = 0; delta <= 3; delta++) {
                 const targetPage = topKeywordPage + delta;
                 if (!resultPages.has(targetPage)) {
-                    // Find this page in the vector store
                     const pageEntry = this.vectorStore.entries.find(
                         e => e.document.metadata.page === targetPage
                     );
                     if (pageEntry) {
                         pagesToAdd.push({
-                            score: 0.04, // reasonable baseline score
+                            score: 0.04,
                             document: pageEntry.document,
+                            retrievalMethod: 'expansion',
                         });
                     }
                 }
             }
 
-            // Replace lowest-scoring results with the missing section pages
             if (pagesToAdd.length > 0) {
                 for (const page of pagesToAdd) {
-                    fused.pop(); // remove lowest score
+                    fused.pop();
                     fused.push(page);
                 }
-                // Re-sort by page number for readability
                 fused.sort((a, b) => a.document.metadata.page - b.document.metadata.page);
             }
         }
 
-        console.log('[CivicVault] Final results after section expansion:', fused.map(r =>
-            `Page ${r.document.metadata.page} (score: ${r.score.toFixed(4)})`
+        console.log('[CivicVault] Hybrid RRF results:', fused.map(r =>
+            `Page ${r.document.metadata.page} [${r.retrievalMethod}] (score: ${r.score.toFixed(4)})`
         ).join(', '));
 
         return fused;
