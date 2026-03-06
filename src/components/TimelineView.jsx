@@ -135,13 +135,16 @@ export default function TimelineView({ vaultFiles }) {
                         <div className="text-center mb-10">
                             {/* Routing Status Badge */}
                             {routingInfo && (
-                                <div className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-500/10 border border-cyan-500/20 mb-4 animate-fade-in">
-                                    <HiCpuChip className="w-4 h-4 text-cyan-400 animate-pulse" />
-                                    <span className="text-xs font-mono text-cyan-300">
-                                        {routingInfo.routedBackend} · {routingInfo.hardware}
+                                <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl mb-4 animate-fade-in ${routingInfo.rerouted ? 'bg-amber-500/10 border border-amber-500/20' : 'bg-cyan-500/10 border border-cyan-500/20'}`}>
+                                    <HiCpuChip className={`w-4 h-4 animate-pulse ${routingInfo.rerouted ? 'text-amber-400' : 'text-cyan-400'}`} />
+                                    <span className={`text-xs font-mono ${routingInfo.rerouted ? 'text-amber-300' : 'text-cyan-300'}`}>
+                                        {routingInfo.rerouted
+                                            ? routingInfo.routedBackend
+                                            : `${routingInfo.routedBackend} · ${routingInfo.hardware}`
+                                        }
                                     </span>
-                                    <span className="text-[10px] text-cyan-500/70 uppercase tracking-wider">
-                                        {routingInfo.status}
+                                    <span className={`text-[10px] uppercase tracking-wider ${routingInfo.rerouted ? 'text-amber-500/70' : 'text-cyan-500/70'}`}>
+                                        {routingInfo.rerouted ? `↗ Rerouted from ${routingInfo.originalBackend}` : routingInfo.status}
                                     </span>
                                 </div>
                             )}
