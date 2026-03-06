@@ -1017,10 +1017,21 @@ OUTPUT RULES:
         const userMessage = `Here are the document pages:\n\n${context}\n\nQuestion: ${query}\n\nRemember: Use markdown formatting. List EVERY item from ALL pages.`;
         messages.push({ role: 'user', content: userMessage });
 
-        // ── Step 5: Call Ollama LLM ───────────────────────────────────
+        // ── Step 5: Call Ollama LLM (adaptive context window) ───────
+        // Estimate tokens: ~4 chars per token. Add buffer for system prompt + response.
+        const estimatedInputTokens = Math.ceil(context.length / 4) + 300;
+        const adaptiveNumPredict = Math.min(2048, Math.max(512, estimatedInputTokens));
+        const adaptiveNumCtx = estimatedInputTokens + adaptiveNumPredict + 256;
+
+        console.log(`[CivicVault] Adaptive LLM config: ~${estimatedInputTokens} input tokens, num_ctx=${adaptiveNumCtx}, num_predict=${adaptiveNumPredict}`);
+
         let answer;
         try {
-            answer = await ollamaChatStream(messages, llmModel, onToken);
+            answer = await ollamaChatStream(messages, llmModel, onToken, 'http://localhost:11434', {
+                num_predict: adaptiveNumPredict,
+                num_ctx: adaptiveNumCtx,
+                temperature: 0,
+            });
         } catch (err) {
             answer = 'LLM not available (' + err.message + '). Showing raw search results below.';
         }
@@ -1401,7 +1412,7 @@ Output a JSON object with a "timeline" array. Each element must have "date", "ev
  * @param {string} baseUrl - Ollama base URL
  * @returns {Promise<string>} - full concatenated answer
  */
-function ollamaChatStream(messages, model = 'llama3', onToken = null, baseUrl = 'http://localhost:11434') {
+function ollamaChatStream(messages, model = 'llama3', onToken = null, baseUrl = 'http://localhost:11434', llmOptions = {}) {
     return new Promise((resolve, reject) => {
         const url = new URL('/api/chat', baseUrl);
         const payload = JSON.stringify({
@@ -1409,9 +1420,10 @@ function ollamaChatStream(messages, model = 'llama3', onToken = null, baseUrl = 
             messages,
             stream: true,
             options: {
-                num_predict: 1024,   // reduced from 4096 — legal answers rarely need more
-                num_ctx: 2048,       // reduced from 4096 — prevents VRAM swapping on 4GB GPUs
+                num_predict: 1024,
+                num_ctx: 2048,
                 temperature: 0,
+                ...llmOptions,  // caller overrides take priority
             },
         });
 
