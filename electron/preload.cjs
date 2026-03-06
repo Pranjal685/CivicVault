@@ -43,7 +43,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getSystemProfile: () => ipcRenderer.invoke('system:get-profile'),
 
     // ── Search ────────────────────────────────────────────────────
-    searchVault: (query, chatHistory, llmModel) => ipcRenderer.invoke('search:query', { query, chatHistory, llmModel }),
+    searchVault: (query, chatHistory, llmModel, caseId) => ipcRenderer.invoke('search:query', { query, chatHistory, llmModel, caseId }),
+
+    // ── Case Management ─────────────────────────────────────────
+    createCase: (name) => ipcRenderer.invoke('case:create', { name }),
+    getAllCases: () => ipcRenderer.invoke('case:getAll'),
+    getCaseDocuments: (caseId) => ipcRenderer.invoke('case:getDocuments', { caseId }),
 
     // ── Search Streaming (token-by-token) ─────────────────────────
     onSearchToken: (callback) => {

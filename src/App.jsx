@@ -12,6 +12,7 @@ const isElectron = Boolean(window.electronAPI);
 export default function App() {
     const [isFirstBoot, setIsFirstBoot] = useState(true);
     const [activeView, setActiveView] = useState('vault');
+    const [activeCaseId, setActiveCaseId] = useState(null);
     const [vaultFiles, setVaultFiles] = useState([]);
     const [processingFile, setProcessingFile] = useState(null);
 
@@ -39,7 +40,7 @@ export default function App() {
     }, []);
 
     // ── Handler: process a single PDF via IPC ─────────────────────────
-    const handleProcessFile = useCallback(async (filePath, fileName, fileSize) => {
+    const handleProcessFile = useCallback(async (filePath, fileName, fileSize, caseId = null) => {
         if (!isElectron) {
             setProcessingFile({
                 fileName,
@@ -57,7 +58,7 @@ export default function App() {
         });
 
         try {
-            const result = await window.electronAPI.processPdf({ filePath, fileName, fileSize });
+            const result = await window.electronAPI.processPdf({ filePath, fileName, fileSize, caseId });
             if (result && !result.success) {
                 console.error('Ingestion failed:', result.error);
             }
@@ -73,7 +74,7 @@ export default function App() {
     }, []);
 
     // ── Handler: open native file dialog ──────────────────────────────
-    const handleBrowseFiles = useCallback(async () => {
+    const handleBrowseFiles = useCallback(async (caseId = null) => {
         if (!isElectron) {
             setProcessingFile({
                 fileName: '',
@@ -89,7 +90,7 @@ export default function App() {
             if (filePaths && filePaths.length > 0) {
                 for (const fp of filePaths) {
                     const fileName = fp.split(/[\\/]/).pop();
-                    await handleProcessFile(fp, fileName, 0);
+                    await handleProcessFile(fp, fileName, 0, caseId);
                 }
             }
         } catch (err) {
@@ -131,6 +132,8 @@ export default function App() {
                                     processingFile={processingFile}
                                     onProcessFile={handleProcessFile}
                                     onBrowseFiles={handleBrowseFiles}
+                                    activeCaseId={activeCaseId}
+                                    onSelectCase={setActiveCaseId}
                                 />
                             )}
                             <div style={{ display: activeView === 'search' ? 'block' : 'none', height: '100%' }}>

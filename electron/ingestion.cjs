@@ -289,8 +289,9 @@ class IngestionEngine {
      * @param {string} filePath
      * @param {string} fileName
      * @param {function} onProgress – ({ status, message, progress?, total? })
+     * @param {string} [caseId] – Optional case ID for multi-case isolation
      */
-    async ingestPDF(filePath, fileName, onProgress) {
+    async ingestPDF(filePath, fileName, onProgress, caseId = null) {
         // Clear cache when new documents are added
         this._cache.clear();
         console.log('[CivicVault] Response cache cleared (new ingestion)');
@@ -439,6 +440,7 @@ class IngestionEngine {
                     pageLabel: `Page ${pageIdx + 1}`,
                     totalPages: numPages,
                     ocrExtracted: scannedPageIndices.length > 0 && scannedPageIndices.includes(pageIdx),
+                    caseId: caseId || 'default',
                 },
             });
         }

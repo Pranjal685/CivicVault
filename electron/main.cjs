@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const { profileSystem } = require('./hardwareScanner.cjs');
 const { executeRoutedInference } = require('./inferenceRouter.cjs');
+const { initDatabase, createCase, getAllCases, getCase, addDocument, getDocumentsByCase } = require('./database.cjs');
 
 // ── Catch-all error handlers (prevent silent exits) ──────────────────
 process.on('uncaughtException', (err) => {
@@ -78,9 +79,9 @@ function createWindow() {
         return result.filePaths;
     });
 
-    // ── PDF Ingestion ─────────────────────────────────────────────────
+    // ── PDF Ingestion ───────────────────────────────────────────────
     ipcMain.handle('ingest:process-pdf', async (event, fileInfo) => {
-        const { filePath, fileName } = fileInfo;
+        const { filePath, fileName, caseId } = fileInfo;
 
         const sendProgress = (data) => {
             if (mainWindow && !mainWindow.isDestroyed()) {
@@ -93,7 +94,17 @@ function createWindow() {
 
         try {
             const engine = getIngestionEngine();
-            const result = await engine.ingestPDF(filePath, fileName, sendProgress);
+            const result = await engine.ingestPDF(filePath, fileName, sendProgress, caseId);
+
+            // Persist document record to SQLite
+            if (caseId && result) {
+                try {
+                    addDocument(caseId, fileName, result.hash, result.numPages, result.numChunks);
+                } catch (dbErr) {
+                    console.error('[CivicVault] Failed to persist document record:', dbErr.message);
+                }
+            }
+
             return { success: true, fileInfo: result };
         } catch (error) {
             console.error('[CivicVault] Ingestion error:', error);
@@ -184,7 +195,7 @@ function createWindow() {
     });
 
     // ── Search Query (with streaming) ───────────────────────────────────
-    ipcMain.handle('search:query', async (event, { query, chatHistory, llmModel }) => {
+    ipcMain.handle('search:query', async (event, { query, chatHistory, llmModel, caseId }) => {
         try {
             const engine = getIngestionEngine();
 
@@ -229,6 +240,14 @@ if (!gotLock) {
     app.whenReady().then(async () => {
         createWindow();
 
+        // ── Initialize SQLite Database ─────────────────────────────
+        try {
+            initDatabase(app.getPath('userData'));
+            console.log('[CivicVault] Database ready.');
+        } catch (err) {
+            console.error('[CivicVault] Database init failed:', err.message);
+        }
+
         // ── Hardware Profiling on Startup ──────────────────────────
         try {
             const profile = await profileSystem();
@@ -244,6 +263,34 @@ if (!gotLock) {
             } catch (err) {
                 console.error('[CivicVault] Profile request failed:', err.message);
                 return { backend: 'CPU (OpenBLAS)', tier: 'lite', tierLabel: 'Lite Tier (3.8B · 4-bit)', totalRamGB: 0, gpus: [], primaryGpu: 'Unknown', gpuVendor: 'Unknown', platform: process.platform };
+            }
+        });
+
+        // ── Case Management IPC Handlers ───────────────────────────
+        ipcMain.handle('case:create', async (_event, { name }) => {
+            try {
+                return { success: true, caseData: createCase(name) };
+            } catch (err) {
+                console.error('[CivicVault] Case creation failed:', err.message);
+                return { success: false, error: err.message };
+            }
+        });
+
+        ipcMain.handle('case:getAll', async () => {
+            try {
+                return { success: true, cases: getAllCases() };
+            } catch (err) {
+                console.error('[CivicVault] Get cases failed:', err.message);
+                return { success: false, cases: [], error: err.message };
+            }
+        });
+
+        ipcMain.handle('case:getDocuments', async (_event, { caseId }) => {
+            try {
+                return { success: true, documents: getDocumentsByCase(caseId) };
+            } catch (err) {
+                console.error('[CivicVault] Get documents failed:', err.message);
+                return { success: false, documents: [], error: err.message };
             }
         });
     });
