@@ -286,6 +286,19 @@ class IngestionEngine {
         this._miniSearchInstances = new Map();
         // userData path — set via setUserDataPath() from main.cjs
         this._userDataPath = null;
+        // Hardware profile for VRAM-aware routing
+        this._vramMB = 0;
+        this._gpuBackend = 'CPU';
+    }
+
+    /**
+     * Set hardware profile for VRAM-aware inference routing.
+     * @param {{ vramMB: number, backend: string }} profile
+     */
+    setHardwareProfile(profile) {
+        this._vramMB = profile.vramMB || 0;
+        this._gpuBackend = profile.backend || 'CPU';
+        console.log(`[CivicVault] IngestionEngine VRAM: ${this._vramMB}MB, Backend: ${this._gpuBackend}`);
     }
 
     /**
@@ -1017,23 +1030,61 @@ OUTPUT RULES:
         const userMessage = `Here are the document pages:\n\n${context}\n\nQuestion: ${query}\n\nRemember: Use markdown formatting. List EVERY item from ALL pages.`;
         messages.push({ role: 'user', content: userMessage });
 
-        // ── Step 5: Call Ollama LLM (adaptive context window) ───────
+        // ── Step 5: Call Ollama LLM (VRAM-aware adaptive routing) ───
         // Estimate tokens: ~4 chars per token. Add buffer for system prompt + response.
         const estimatedInputTokens = Math.ceil(context.length / 4) + 300;
         const adaptiveNumPredict = Math.min(2048, Math.max(512, estimatedInputTokens));
         const adaptiveNumCtx = estimatedInputTokens + adaptiveNumPredict + 256;
 
-        console.log(`[CivicVault] Adaptive LLM config: ~${estimatedInputTokens} input tokens, num_ctx=${adaptiveNumCtx}, num_predict=${adaptiveNumPredict}`);
+        // ── Option 1: VRAM-Aware Preemptive CPU Routing ───────────────
+        // A 7B model at 5-bit quant uses ~4GB VRAM. Each 1K tokens of context
+        // needs ~50MB VRAM. If the remaining VRAM can't handle the context,
+        // force CPU inference to prevent CUDA OOM.
+        const MODEL_FOOTPRINT_MB = 3800; // ~3.8GB for 7B 5-bit model
+        const MB_PER_1K_TOKENS = 50;
+        const requiredVRAM = MODEL_FOOTPRINT_MB + (adaptiveNumCtx / 1000) * MB_PER_1K_TOKENS;
+        const isGPU = this._gpuBackend.includes('CUDA') || this._gpuBackend.includes('DirectML') || this._gpuBackend.includes('ROCm');
+        const vramSafe = this._vramMB > 0 && requiredVRAM < this._vramMB;
+        const forceCPU = isGPU && !vramSafe;
+
+        if (forceCPU) {
+            console.log(`[CivicVault] ⚠️ VRAM ceiling exceeded: need ~${Math.round(requiredVRAM)}MB, have ${this._vramMB}MB. Routing to CPU.`);
+        } else {
+            console.log(`[CivicVault] Adaptive LLM config: ~${estimatedInputTokens} input tokens, num_ctx=${adaptiveNumCtx}, num_predict=${adaptiveNumPredict}${isGPU ? ' (GPU)' : ' (CPU)'}`);
+        }
+
+        const llmOptions = {
+            num_predict: adaptiveNumPredict,
+            num_ctx: adaptiveNumCtx,
+            temperature: 0,
+        };
+
+        // Force CPU: num_gpu=0 tells Ollama to offload 0 layers to GPU
+        if (forceCPU) {
+            llmOptions.num_gpu = 0;
+        }
 
         let answer;
         try {
-            answer = await ollamaChatStream(messages, llmModel, onToken, 'http://localhost:11434', {
-                num_predict: adaptiveNumPredict,
-                num_ctx: adaptiveNumCtx,
-                temperature: 0,
-            });
+            answer = await ollamaChatStream(messages, llmModel, onToken, 'http://localhost:11434', llmOptions);
         } catch (err) {
-            answer = 'LLM not available (' + err.message + '). Showing raw search results below.';
+            // ── Option 2: CUDA Error Auto-Retry on CPU ────────────────
+            const errMsg = (err.message || '').toLowerCase();
+            const isCudaError = errMsg.includes('cuda') || errMsg.includes('gpu') || errMsg.includes('out of memory') || errMsg.includes('oom');
+
+            if (isCudaError && !forceCPU) {
+                console.log(`[CivicVault] 🔄 CUDA error detected: "${err.message}". Retrying on CPU (num_gpu=0)...`);
+                try {
+                    answer = await ollamaChatStream(messages, llmModel, onToken, 'http://localhost:11434', {
+                        ...llmOptions,
+                        num_gpu: 0,
+                    });
+                } catch (retryErr) {
+                    answer = 'LLM failed on GPU and CPU (' + retryErr.message + '). Showing raw search results below.';
+                }
+            } else {
+                answer = 'LLM not available (' + err.message + '). Showing raw search results below.';
+            }
         }
 
         // ── Step 6: Build sources ─────────────────────────────────────

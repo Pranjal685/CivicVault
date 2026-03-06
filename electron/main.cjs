@@ -24,6 +24,17 @@ function getIngestionEngine() {
         } catch (e) {
             console.error('[CivicVault] Failed to set userData path:', e.message);
         }
+        // Set hardware profile for VRAM-aware inference routing
+        profileSystem().then(profile => {
+            try {
+                ingestionEngine.setHardwareProfile({
+                    vramMB: profile.vramMB || 0,
+                    backend: profile.backend || 'CPU',
+                });
+            } catch (e) {
+                console.error('[CivicVault] Failed to set hardware profile:', e.message);
+            }
+        }).catch(() => { });
     }
     return ingestionEngine;
 }
