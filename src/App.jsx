@@ -123,6 +123,7 @@ export default function App() {
                             activeView={activeView}
                             onNavigate={setActiveView}
                             vaultFiles={vaultFiles}
+                            activeCaseId={activeCaseId}
                         />
 
                         <main className="flex-1 overflow-hidden">

@@ -61,4 +61,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('search:done', handler);
         return () => ipcRenderer.removeListener('search:done', handler);
     },
+
+    // ── Audit Ledger ─────────────────────────────────────────────────
+    getAuditTrail: (caseId) => ipcRenderer.invoke('ledger:getAuditTrail', { caseId }),
+    verifyChain: (caseId) => ipcRenderer.invoke('ledger:verifyChain', { caseId }),
 });

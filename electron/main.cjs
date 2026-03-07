@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const { profileSystem } = require('./hardwareScanner.cjs');
 const { executeRoutedInference } = require('./inferenceRouter.cjs');
-const { initDatabase, createCase, getAllCases, getCase, addDocument, getDocumentsByCase } = require('./database.cjs');
+const { initDatabase, createCase, getAllCases, getCase, addDocument, getDocumentsByCase, appendLedgerEntry, getAuditTrail, verifyChainIntegrity } = require('./database.cjs');
 
 // ── Catch-all error handlers (prevent silent exits) ──────────────────
 process.on('uncaughtException', (err) => {
@@ -113,12 +113,18 @@ function createWindow() {
             const engine = getIngestionEngine();
             const result = await engine.ingestPDF(filePath, fileName, sendProgress, caseId);
 
-            // Persist document record to SQLite
+            // Persist document record to SQLite + audit ledger
             if (caseId && result) {
                 try {
                     addDocument(caseId, fileName, result.hash, result.numPages, result.numChunks);
+                    appendLedgerEntry(caseId, 'DOCUMENT_INGEST', {
+                        filename: fileName,
+                        file_hash: result.hash,
+                        num_pages: result.numPages,
+                        num_chunks: result.numChunks,
+                    });
                 } catch (dbErr) {
-                    console.error('[CivicVault] Failed to persist document record:', dbErr.message);
+                    console.error('[CivicVault] Failed to persist document/ledger:', dbErr.message);
                 }
             }
 
@@ -159,6 +165,23 @@ function createWindow() {
 
             const engine = getIngestionEngine();
             const timeline = await engine.extractTimeline(llmModel || 'llama3.2');
+
+            // Audit ledger: log timeline generation
+            // Timeline is case-scoped via the engine's active case
+            try {
+                const files = engine.getIngestedFiles();
+                const activeCaseId = files.length > 0 ? files[0].caseId : null;
+                if (activeCaseId) {
+                    appendLedgerEntry(activeCaseId, 'TIMELINE_GENERATION', {
+                        model: llmModel || 'llama3.2',
+                        routed_backend: routingData.routedBackend,
+                        document_count: files.length,
+                    });
+                }
+            } catch (ledgerErr) {
+                console.error('[CivicVault] Ledger entry failed:', ledgerErr.message);
+            }
+
             return { success: true, timeline, routing: routingData };
         } catch (err) {
             console.error('[Main process] Timeline generation failed:', err);
@@ -232,11 +255,44 @@ function createWindow() {
             // Signal streaming is done
             event.sender.send('search:done');
 
+            // Audit ledger: log search query
+            try {
+                if (caseId) {
+                    appendLedgerEntry(caseId, 'SEARCH_QUERY', {
+                        query: query,
+                        results_count: result.sources?.length || 0,
+                    });
+                }
+            } catch (ledgerErr) {
+                console.error('[CivicVault] Search ledger entry failed:', ledgerErr.message);
+            }
+
             return { success: true, ...result };
         } catch (error) {
             console.error('[CivicVault] Search error:', error);
             event.sender.send('search:done');
             return { success: false, error: error.message };
+        }
+    });
+
+    // ── Audit Ledger IPC ─────────────────────────────────────────────
+    ipcMain.handle('ledger:getAuditTrail', async (_event, { caseId }) => {
+        try {
+            const entries = getAuditTrail(caseId);
+            return { success: true, entries };
+        } catch (err) {
+            console.error('[CivicVault] Audit trail fetch failed:', err.message);
+            return { success: false, error: err.message };
+        }
+    });
+
+    ipcMain.handle('ledger:verifyChain', async (_event, { caseId }) => {
+        try {
+            const result = verifyChainIntegrity(caseId);
+            return { success: true, ...result };
+        } catch (err) {
+            console.error('[CivicVault] Chain verification failed:', err.message);
+            return { success: false, error: err.message };
         }
     });
 }

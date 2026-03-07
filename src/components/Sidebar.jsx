@@ -7,8 +7,10 @@ import {
     HiOutlineDocumentText,
     HiOutlineQuestionMarkCircle,
     HiOutlineClock,
+    HiOutlineFingerPrint,
     HiCpuChip,
 } from 'react-icons/hi2';
+import AuditTrailModal from './AuditTrailModal';
 
 const navItems = [
     {
@@ -36,13 +38,13 @@ const bottomItems = [
     { id: 'help', label: 'Help', icon: HiOutlineQuestionMarkCircle },
 ];
 
-export default function Sidebar({ activeView, onNavigate, vaultFiles = [] }) {
+export default function Sidebar({ activeView, onNavigate, vaultFiles = [], activeCaseId }) {
     const fileCount = vaultFiles.length;
-    // Progress bar: cap at 20 files for visual, or just show proportional
     const progressWidth = fileCount > 0 ? Math.min((fileCount / 20) * 100, 100) : 0;
 
     // ── Hardware Profile State ────────────────────────────────────────
     const [hwProfile, setHwProfile] = useState(null);
+    const [showAuditModal, setShowAuditModal] = useState(false);
 
     useEffect(() => {
         if (window.electronAPI?.getSystemProfile) {
@@ -171,6 +173,32 @@ export default function Sidebar({ activeView, onNavigate, vaultFiles = [] }) {
                     )}
                 </div>
             </nav>
+
+            {/* Audit Trail Button — shown when case has files */}
+            {fileCount > 0 && (
+                <div className="px-3 pb-2">
+                    <button
+                        onClick={() => setShowAuditModal(true)}
+                        className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-left transition-all duration-200 group bg-emerald-500/5 border border-emerald-500/15 hover:bg-emerald-500/10 hover:border-emerald-500/25"
+                    >
+                        <div className="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center shrink-0">
+                            <HiOutlineFingerPrint className="w-4 h-4 text-emerald-400" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                            <p className="text-[11px] font-semibold text-emerald-300">Audit Trail</p>
+                            <p className="text-[9px] text-dark-500">Chain-of-Custody Ledger</p>
+                        </div>
+                    </button>
+                </div>
+            )}
+
+            {/* Audit Trail Modal */}
+            <AuditTrailModal
+                isOpen={showAuditModal}
+                onClose={() => setShowAuditModal(false)}
+                caseId={activeCaseId}
+                caseName={vaultFiles.length > 0 ? 'Active Case' : ''}
+            />
 
             {/* Hardware Status Badge */}
             <div className="px-3 pb-2">
