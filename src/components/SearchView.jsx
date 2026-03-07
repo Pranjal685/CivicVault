@@ -16,8 +16,25 @@ export default function SearchView() {
     const [isSearching, setIsSearching] = useState(false);
     const [conversation, setConversation] = useState([]);
     const [streamingText, setStreamingText] = useState('');
+    const [searchElapsed, setSearchElapsed] = useState(0);
     const chatEndRef = useRef(null);
     const streamingRef = useRef('');
+    const timerRef = useRef(null);
+
+    // Elapsed timer during search
+    useEffect(() => {
+        if (isSearching) {
+            setSearchElapsed(0);
+            timerRef.current = setInterval(() => {
+                setSearchElapsed(prev => prev + 1);
+            }, 1000);
+        } else {
+            clearInterval(timerRef.current);
+            timerRef.current = null;
+            setSearchElapsed(0);
+        }
+        return () => clearInterval(timerRef.current);
+    }, [isSearching]);
 
     // Auto-scroll to bottom on new messages and during streaming
     useEffect(() => {
@@ -249,13 +266,25 @@ export default function SearchView() {
                                     <span className="inline-block w-1.5 h-4 bg-vault-400 animate-pulse ml-0.5 align-text-bottom rounded-sm" />
                                 </div>
                             ) : (
-                                <div className="flex items-center gap-1.5">
-                                    <span className="text-xs text-dark-500">Analyzing documents</span>
-                                    <span className="flex gap-0.5">
-                                        <span className="w-1 h-1 rounded-full bg-vault-400 animate-bounce" style={{ animationDelay: '0ms' }}></span>
-                                        <span className="w-1 h-1 rounded-full bg-vault-400 animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                                        <span className="w-1 h-1 rounded-full bg-vault-400 animate-bounce" style={{ animationDelay: '300ms' }}></span>
-                                    </span>
+                                <div className="space-y-2">
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="text-xs text-dark-500">Analyzing documents</span>
+                                        <span className="flex gap-0.5">
+                                            <span className="w-1 h-1 rounded-full bg-vault-400 animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                                            <span className="w-1 h-1 rounded-full bg-vault-400 animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                                            <span className="w-1 h-1 rounded-full bg-vault-400 animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                                        </span>
+                                    </div>
+                                    {searchElapsed >= 15 && (
+                                        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/5 border border-amber-500/15">
+                                            <span className="text-[11px] text-amber-400/80">
+                                                ⚡ Running on CPU mode — this may take 2-4 minutes ({searchElapsed}s elapsed)
+                                            </span>
+                                        </div>
+                                    )}
+                                    {searchElapsed >= 5 && searchElapsed < 15 && (
+                                        <span className="text-[10px] text-dark-600 font-mono">{searchElapsed}s</span>
+                                    )}
                                 </div>
                             )}
                         </div>

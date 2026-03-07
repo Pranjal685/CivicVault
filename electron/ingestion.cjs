@@ -1030,74 +1030,30 @@ OUTPUT RULES:
         const userMessage = `Here are the document pages:\n\n${context}\n\nQuestion: ${query}\n\nRemember: Use markdown formatting. List EVERY item from ALL pages.`;
         messages.push({ role: 'user', content: userMessage });
 
-        // ── Step 5: Call Ollama LLM (VRAM-aware adaptive routing) ───
-        // Estimate tokens: ~4 chars per token. Add buffer for system prompt + response.
-        const estimatedInputTokens = Math.ceil(context.length / 4) + 300;
-        const adaptiveNumPredict = Math.min(2048, Math.max(512, estimatedInputTokens));
-        const adaptiveNumCtx = estimatedInputTokens + adaptiveNumPredict + 256;
-
-        // ── Option 1: VRAM-Aware Preemptive CPU Routing ───────────────
-        // Two layers of defense:
-        //   A) Universal safety: if context > 2048 tokens → force CPU
-        //      (GPUs under 8GB can't handle 7B model + large context)
-        //   B) VRAM-based: if we know the VRAM, do an exact check
-        const SAFE_GPU_CTX_LIMIT = 2048; // safe for most GPUs with 7B models
-        const MODEL_FOOTPRINT_MB = 3800;
-        const MB_PER_1K_TOKENS = 50;
-
-        let forceCPU = false;
-        let forceReason = '';
-
-        // Layer A: Universal safety — large context always uses CPU
-        if (adaptiveNumCtx > SAFE_GPU_CTX_LIMIT) {
-            forceCPU = true;
-            forceReason = `context ${adaptiveNumCtx} exceeds safe GPU limit ${SAFE_GPU_CTX_LIMIT}`;
-        }
-
-        // Layer B: VRAM-based check (when profile IS loaded)
-        if (!forceCPU && this._vramMB > 0) {
-            const requiredVRAM = MODEL_FOOTPRINT_MB + (adaptiveNumCtx / 1000) * MB_PER_1K_TOKENS;
-            const isGPU = this._gpuBackend.includes('CUDA') || this._gpuBackend.includes('DirectML') || this._gpuBackend.includes('ROCm');
-            if (isGPU && requiredVRAM >= this._vramMB) {
-                forceCPU = true;
-                forceReason = `need ~${Math.round(requiredVRAM)}MB VRAM, have ${this._vramMB}MB`;
-            }
-        }
-
-        if (forceCPU) {
-            console.log(`[CivicVault] ⚠️ CPU routing: ${forceReason}. Setting num_gpu=0.`);
-        } else {
-            console.log(`[CivicVault] Adaptive LLM: ~${estimatedInputTokens} input tokens, num_ctx=${adaptiveNumCtx}, num_predict=${adaptiveNumPredict} (GPU)`);
-        }
-
-        const llmOptions = {
-            num_predict: adaptiveNumPredict,
-            num_ctx: adaptiveNumCtx,
-            temperature: 0,
-        };
-
-        // Force CPU: num_gpu=0 tells Ollama to offload 0 layers to GPU
-        if (forceCPU) {
-            llmOptions.num_gpu = 0;
-        }
-
+        // ── Step 5: Call Ollama LLM ───────────────────────────────────
         let answer;
         try {
-            answer = await ollamaChatStream(messages, llmModel, onToken, 'http://localhost:11434', llmOptions);
+            answer = await ollamaChatStream(messages, llmModel, onToken, 'http://localhost:11434', {
+                num_predict: 4096,
+                num_ctx: 4096,
+                temperature: 0,
+            });
         } catch (err) {
-            // ── Option 2: CUDA Error Auto-Retry on CPU ────────────────
+            // Auto-retry on CPU if GPU fails with CUDA error
             const errMsg = (err.message || '').toLowerCase();
             const isCudaError = errMsg.includes('cuda') || errMsg.includes('gpu') || errMsg.includes('out of memory') || errMsg.includes('oom');
 
-            if (isCudaError && !forceCPU) {
-                console.log(`[CivicVault] 🔄 CUDA error detected: "${err.message}". Retrying on CPU (num_gpu=0)...`);
+            if (isCudaError) {
+                console.log(`[CivicVault] 🔄 CUDA error: "${err.message}". Retrying with num_gpu=0...`);
                 try {
                     answer = await ollamaChatStream(messages, llmModel, onToken, 'http://localhost:11434', {
-                        ...llmOptions,
+                        num_predict: 4096,
+                        num_ctx: 4096,
+                        temperature: 0,
                         num_gpu: 0,
                     });
                 } catch (retryErr) {
-                    answer = 'LLM failed on GPU and CPU (' + retryErr.message + '). Showing raw search results below.';
+                    answer = 'LLM failed (' + retryErr.message + '). Showing raw search results below.';
                 }
             } else {
                 answer = 'LLM not available (' + err.message + '). Showing raw search results below.';

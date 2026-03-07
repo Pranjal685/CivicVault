@@ -2,12 +2,18 @@
  * Hardware Scanner — Profiles the user's system to determine
  * optimal LLM inference backend and model tier.
  *
- * Returns: { backend, tier, totalRamGB, gpus: [string] }
+ * Returns: { backend, tier, totalRamGB, gpus: [string], vramMB }
+ * Result is cached — hardware is only queried once per session.
  */
 
 const os = require('os');
 
+// ── Cached profile — only queries hardware once ───────────────────────
+let _cachedProfile = null;
+
 async function profileSystem() {
+    if (_cachedProfile) return _cachedProfile;
+
     const si = require('systeminformation');
 
     // ── Gather hardware info ──────────────────────────────────────────
@@ -17,13 +23,12 @@ async function profileSystem() {
     ]);
 
     const totalRamGB = Math.round(mem.total / (1024 ** 3));
-    const platform = os.platform(); // 'win32', 'linux', 'darwin'
+    const platform = os.platform();
 
     // ── GPU Detection ─────────────────────────────────────────────────
     const gpuControllers = graphics.controllers || [];
     const gpuModels = gpuControllers.map(c => c.model || c.name || 'Unknown GPU');
 
-    // Detect primary GPU vendor from all controllers
     let detectedVendor = 'Unknown';
     let detectedModel = '';
     let detectedVramMB = 0;
@@ -36,12 +41,11 @@ async function profileSystem() {
             detectedVendor = 'NVIDIA';
             detectedModel = controller.model || controller.name;
             detectedVramMB = controller.vram || 0;
-            break; // NVIDIA takes priority
+            break;
         } else if (vendor.includes('AMD') || vendor.includes('ADVANCED MICRO') || model.includes('RADEON') || model.includes('RX ')) {
             detectedVendor = 'AMD';
             detectedModel = controller.model || controller.name;
             detectedVramMB = controller.vram || 0;
-            // Don't break — NVIDIA might be found next
         } else if (vendor.includes('INTEL') || model.includes('INTEL') || model.includes('UHD') || model.includes('IRIS')) {
             if (detectedVendor === 'Unknown') {
                 detectedVendor = 'Intel';
@@ -57,7 +61,6 @@ async function profileSystem() {
     if (detectedVendor === 'NVIDIA') {
         backend = 'CUDA';
     } else if (detectedVendor === 'AMD') {
-        // Check for Ryzen AI NPU
         const hasNPU = detectedModel.toUpperCase().includes('RYZEN') || detectedModel.toUpperCase().includes('AI');
         if (hasNPU) {
             backend = 'ONNX_VAIP';
@@ -98,6 +101,7 @@ async function profileSystem() {
         platform,
     };
 
+    // Print once only
     console.log('[CivicVault] ═══ Hardware Profile ═══');
     console.log(`  GPU:     ${detectedModel || 'No discrete GPU'} (${detectedVendor})`);
     console.log(`  VRAM:    ${detectedVramMB} MB`);
@@ -106,6 +110,7 @@ async function profileSystem() {
     console.log(`  Tier:    ${tierLabel}`);
     console.log('[CivicVault] ════════════════════════');
 
+    _cachedProfile = profile;
     return profile;
 }
 
